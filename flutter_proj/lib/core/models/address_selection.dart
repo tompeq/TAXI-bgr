@@ -1,0 +1,1 @@
+enum AddressSelection { from, to }

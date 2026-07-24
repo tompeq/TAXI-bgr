@@ -1,0 +1,59 @@
+# Local environment files and secrets
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.production.example
+
+# Dependencies and generated build output
+admin/node_modules/
+admin/dist/
+backend/node_modules/
+backend/dist/
+flutter_proj/.dart_tool/
+flutter_proj/build/
+flutter_proj/dist/
+flutter_proj/.flutter-plugins
+flutter_proj/.flutter-plugins-dependencies
+
+# Local IDE and operating-system files
+.idea/
+.vscode/*
+!.vscode/extensions.json
+**/.idea/
+**/.vscode/*
+!.vscode/extensions.json
+*.iml
+.DS_Store
+Thumbs.db
+
+# Release artifacts and local backups
+**/*.apk
+**/*.aab
+**/*.ipa
+*.tar.gz
+*.zip
+
+# Signing keys and certificates
+**/*.jks
+**/*.keystore
+**/*.p12
+**/*.pem
+**/*.key
+**/key.properties
+
+# Firebase service/config files generated for a local project
+flutter_proj/android/app/google-services.json
+flutter_proj/lib/firebase_options.dart
+
+# Logs and local reports
+**/*.log
+coverage/
+test-results/
+
+# Local values used to restore environment-specific settings after a public commit.
+.git-local/
+
+# Local deployment and integration helpers. Keep them on disk, but do not
+# publish environment-specific server operations in the portfolio repository.
+flutter_proj/upload-apk-to-server.ps1
+flutter_proj/tool/auth_smoke.dart
