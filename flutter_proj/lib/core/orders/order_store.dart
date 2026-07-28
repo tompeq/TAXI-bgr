@@ -27,6 +27,7 @@ class OrderStore extends ChangeNotifier {
   final AuthController auth;
 
   List<TaxiOrder> _openOrders = const [];
+  List<TaxiOrder> _scheduledDriverOrders = const [];
   String _boardAnnouncement = '';
   TaxiOrder? _activeDriverOrder;
   TaxiOrder? _activePassengerOrder;
@@ -39,6 +40,11 @@ class OrderStore extends ChangeNotifier {
   bool _localSurveyAnswered = false;
 
   List<TaxiOrder> get openOrders => _openOrders;
+  List<TaxiOrder> get scheduledDriverOrders => _scheduledDriverOrders;
+  bool get hasImminentReservation => _scheduledDriverOrders.any(
+    (order) =>
+        order.tripTime.difference(DateTime.now()) <= const Duration(minutes: 5),
+  );
   String get boardAnnouncement => _boardAnnouncement;
   TaxiOrder? get activeDriverOrder => _activeDriverOrder;
   TaxiOrder? get activePassengerOrder => _activePassengerOrder;
@@ -59,6 +65,7 @@ class OrderStore extends ChangeNotifier {
 
   void resetForAccountSwitch() {
     _openOrders = const [];
+    _scheduledDriverOrders = const [];
     _boardAnnouncement = '';
     _activeDriverOrder = null;
     _activePassengerOrder = null;
@@ -187,6 +194,7 @@ class OrderStore extends ChangeNotifier {
         configured: true,
       );
       _openOrders = _localOrders();
+      _scheduledDriverOrders = const [];
       _boardAnnouncement =
           'Проверяйте адрес и способ оплаты перед принятием заказа.';
       notifyListeners();
@@ -197,9 +205,13 @@ class OrderStore extends ChangeNotifier {
       _driverPaymentDetails = await auth.authorizedRequest(
         driverFinanceApi.getPaymentDetails,
       );
-      _activeDriverOrder = await auth.authorizedRequest(api.getActive);
-      if (_activeDriverOrder == null &&
-          _driverWorkState?.status == DriverLineStatus.online) {
+      final activeAndReservations = await Future.wait<Object?>([
+        auth.authorizedRequest(api.getActive),
+        auth.authorizedRequest(api.getReservations),
+      ]);
+      _activeDriverOrder = activeAndReservations[0] as TaxiOrder?;
+      _scheduledDriverOrders = activeAndReservations[1] as List<TaxiOrder>;
+      if (_driverWorkState?.status == DriverLineStatus.online) {
         _openOrders = await _loadBoardFromServer();
       } else {
         _openOrders = const [];
@@ -263,14 +275,16 @@ class OrderStore extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (_activeDriverOrder != null ||
-        _driverWorkState?.status != DriverLineStatus.online) {
+    if (_driverWorkState?.status != DriverLineStatus.online) {
       return;
     }
     await _run(() async {
       _driverWorkState = await auth.authorizedRequest(driverWorkApi.getState);
       if (_driverWorkState?.status == DriverLineStatus.online) {
         _openOrders = await _loadBoardFromServer();
+        _scheduledDriverOrders = await auth.authorizedRequest(
+          api.getReservations,
+        );
       }
     }, showLoading: false);
   }
@@ -290,11 +304,11 @@ class OrderStore extends ChangeNotifier {
       final results = await Future.wait<Object?>([
         auth.authorizedRequest(api.getActive),
         _loadBoardFromServer(),
+        auth.authorizedRequest(api.getReservations),
       ]);
       _activeDriverOrder = results[0] as TaxiOrder?;
-      _openOrders = _activeDriverOrder == null
-          ? results[1] as List<TaxiOrder>
-          : const [];
+      _openOrders = results[1] as List<TaxiOrder>;
+      _scheduledDriverOrders = results[2] as List<TaxiOrder>;
     });
   }
 
@@ -302,6 +316,7 @@ class OrderStore extends ChangeNotifier {
     if (isLocalDevelopment) {
       _driverWorkState = _localWorkState(DriverLineStatus.offline);
       _openOrders = const [];
+      _scheduledDriverOrders = const [];
       notifyListeners();
       return;
     }
@@ -338,9 +353,7 @@ class OrderStore extends ChangeNotifier {
     }
     await _run(() async {
       _driverWorkState = await auth.authorizedRequest(driverWorkApi.resume);
-      _openOrders = _activeDriverOrder == null
-          ? await _loadBoardFromServer()
-          : const [];
+      _openOrders = await _loadBoardFromServer();
     });
   }
 
@@ -422,7 +435,9 @@ class OrderStore extends ChangeNotifier {
         throw const ApiException(message: 'Заказ уже недоступен');
       }
       _activeDriverOrder = order.copyWith(status: OrderStatus.accepted);
-      _openOrders = const [];
+      _openOrders = _openOrders
+          .where((item) => item.id != orderId)
+          .toList(growable: false);
       notifyListeners();
       return;
     }
@@ -430,8 +445,21 @@ class OrderStore extends ChangeNotifier {
       final accepted = await auth.authorizedRequest(
         (token) => api.acceptOrder(token, orderId),
       );
-      _activeDriverOrder = accepted;
-      _openOrders = const [];
+      final futureReservation =
+          accepted.scheduled &&
+          accepted.tripTime.difference(DateTime.now()) >
+              const Duration(minutes: 5);
+      if (futureReservation) {
+        _scheduledDriverOrders = [
+          ..._scheduledDriverOrders.where((item) => item.id != accepted.id),
+          accepted,
+        ]..sort((a, b) => a.tripTime.compareTo(b.tripTime));
+      } else {
+        _activeDriverOrder = accepted;
+      }
+      _openOrders = _openOrders
+          .where((item) => item.id != accepted.id)
+          .toList(growable: false);
     });
   }
 
@@ -459,13 +487,16 @@ class OrderStore extends ChangeNotifier {
         _activeDriverOrder = null;
         _driverWorkState = await auth.authorizedRequest(driverWorkApi.getState);
         _openOrders = await _loadBoardFromServer();
+        _scheduledDriverOrders = await auth.authorizedRequest(
+          api.getReservations,
+        );
       } else {
         _activeDriverOrder = updated;
       }
     });
   }
 
-  Future<void> cancelActiveOrder(String reason) async {
+  Future<void> cancelActiveOrder(String reason, {String? reasonCode}) async {
     final active = _activeDriverOrder;
     if (active == null) {
       return;
@@ -478,7 +509,8 @@ class OrderStore extends ChangeNotifier {
     }
     await _run(() async {
       await auth.authorizedRequest(
-        (token) => api.cancelOrder(token, active.id, reason),
+        (token) =>
+            api.cancelOrder(token, active.id, reason, reasonCode: reasonCode),
       );
       _activeDriverOrder = null;
       _openOrders = await _loadBoardFromServer();
@@ -538,6 +570,7 @@ class OrderStore extends ChangeNotifier {
   Future<List<TaxiOrder>> _loadBoardFromServer() async {
     final board = await auth.authorizedRequest(api.getBoard);
     _boardAnnouncement = board.announcement;
+    _scheduledDriverOrders = board.reservations;
     return board.orders;
   }
 

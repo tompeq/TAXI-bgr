@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Point } from 'geojson';
 import {
+  Brackets,
   DataSource,
   EntityManager,
   In,
@@ -52,6 +53,15 @@ const DRIVER_TRANSITIONS: Readonly<Record<string, readonly OrderStatus[]>> = {
   [OrderStatus.Waiting]: [OrderStatus.Started],
   [OrderStatus.Started]: [OrderStatus.Completed],
 };
+
+const DRIVING_ORDER_STATUSES = [
+  OrderStatus.DriverEnRoute,
+  OrderStatus.Arrived,
+  OrderStatus.Waiting,
+  OrderStatus.Started,
+] as const;
+const SCHEDULED_ACCEPT_BLOCK_MINUTES = 5;
+const SCHEDULED_RESERVATION_CONFLICT_MINUTES = 30;
 
 @Injectable()
 export class OrdersService {
@@ -152,6 +162,9 @@ export class OrdersService {
             destinationZone: quote.destinationZone,
             scheduledFor,
             scheduledAnnouncedAt: null,
+            scheduledOneHourNotifiedAt: null,
+            scheduledFifteenMinutesNotifiedAt: null,
+            scheduledFiveMinutesNotifiedAt: null,
             tariffSettingId: quote.settingId,
             tariffVersion: quote.settingVersion,
             pricingMode: quote.pricingMode,
@@ -173,6 +186,7 @@ export class OrdersService {
             canceledAt: null,
             canceledByUserId: null,
             cancellationReason: null,
+            cancellationReasonCode: null,
           }),
         );
         await this.recordTransition(
@@ -206,10 +220,10 @@ export class OrdersService {
     total: number;
     visibilityDelaySeconds: number;
     announcement: string;
+    reservations: Array<ReturnType<OrdersService['toResponse']>>;
   }> {
     const boardAccess = await this.driverWork.assertCanViewBoard(driver);
     const settings = await this.serviceSettings.get();
-    const now = new Date();
     const visibleBefore = new Date(
       Date.now() - boardAccess.visibilityDelaySeconds * 1000,
     );
@@ -222,14 +236,23 @@ export class OrdersService {
         acceptedKinds: boardAccess.acceptedKinds,
       })
       .andWhere('order.created_at <= :visibleBefore', { visibleBefore })
-      .andWhere(
-        '(order.scheduled_for IS NULL OR order.scheduled_for <= :now)',
-        { now },
-      )
-      .orderBy('order.createdAt', 'DESC')
+      .orderBy('order.scheduledFor', 'ASC', 'NULLS FIRST')
+      .addOrderBy('order.createdAt', 'DESC')
       .skip((query.page - 1) * query.pageSize)
       .take(query.pageSize)
       .getManyAndCount();
+    const reservations = await this.orders.find({
+      where: {
+        driverUserId: driver.userId,
+        status: OrderStatus.Accepted,
+        scheduledFor: LessThanOrEqual(
+          new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        ),
+      },
+      relations: { passenger: true, driver: { driverProfile: true } },
+      order: { scheduledFor: 'ASC' },
+      take: 20,
+    });
     return {
       items: orders.map((order) => this.toResponse(order)),
       page: query.page,
@@ -237,6 +260,11 @@ export class OrdersService {
       total,
       visibilityDelaySeconds: boardAccess.visibilityDelaySeconds,
       announcement: settings.driverBoardAnnouncement,
+      reservations: reservations
+        .filter(
+          (order) => order.scheduledFor && order.scheduledFor > new Date(),
+        )
+        .map((order) => this.toResponse(order)),
     };
   }
 
@@ -258,21 +286,64 @@ export class OrdersService {
       });
     } else if (currentUser.role === UserRole.Driver) {
       await this.driverWork.assertApprovedDriver(currentUser);
-      order = await this.orders.findOne({
-        where: {
+      const activeBefore = new Date(
+        Date.now() + SCHEDULED_ACCEPT_BLOCK_MINUTES * 60_000,
+      );
+      order = await this.orders
+        .createQueryBuilder('order')
+        .leftJoinAndSelect('order.passenger', 'passenger')
+        .leftJoinAndSelect('order.driver', 'driver')
+        .leftJoinAndSelect('driver.driverProfile', 'driverProfile')
+        .where('order.driverUserId = :driverUserId', {
           driverUserId: currentUser.userId,
-          status: In([...ACTIVE_DRIVER_ORDER_STATUSES]),
-        },
-        relations: {
-          passenger: true,
-          driver: { driverProfile: true },
-        },
-        order: { createdAt: 'DESC' },
-      });
+        })
+        .andWhere(
+          new Brackets((query) => {
+            query
+              .where('order.status IN (:...drivingStatuses)', {
+                drivingStatuses: DRIVING_ORDER_STATUSES,
+              })
+              .orWhere(
+                `(
+                  order.status = :acceptedStatus
+                  AND (
+                    order.scheduledFor IS NULL
+                    OR order.scheduledFor <= :activeBefore
+                  )
+                )`,
+                {
+                  acceptedStatus: OrderStatus.Accepted,
+                  activeBefore,
+                },
+              );
+          }),
+        )
+        .orderBy('order.scheduledFor', 'ASC', 'NULLS FIRST')
+        .addOrderBy('order.createdAt', 'DESC')
+        .getOne();
     } else {
       throw this.roleForbidden();
     }
     return order ? this.toResponse(order) : null;
+  }
+
+  async listDriverReservations(driver: AuthenticatedUser) {
+    await this.driverWork.assertApprovedDriver(driver);
+    const now = new Date();
+    const orders = await this.orders
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.passenger', 'passenger')
+      .leftJoinAndSelect('order.driver', 'driver')
+      .leftJoinAndSelect('driver.driverProfile', 'driverProfile')
+      .where('order.driverUserId = :driverUserId', {
+        driverUserId: driver.userId,
+      })
+      .andWhere('order.status = :status', { status: OrderStatus.Accepted })
+      .andWhere('order.scheduledFor > :now', { now })
+      .orderBy('order.scheduledFor', 'ASC')
+      .take(20)
+      .getMany();
+    return { items: orders.map((order) => this.toResponse(order)) };
   }
 
   async assertTrackingAccess(
@@ -319,17 +390,10 @@ export class OrdersService {
           driver,
         );
         const repository = manager.getRepository(OrderEntity);
-        const active = await repository.findOneBy({
-          driverUserId: driver.userId,
-          status: In([...ACTIVE_DRIVER_ORDER_STATUSES]),
-        });
-        if (active) {
-          throw new ConflictException({
-            code: 'DRIVER_ALREADY_HAS_ACTIVE_ORDER',
-            message: 'Driver already has an active order',
-          });
-        }
-
+        const now = new Date();
+        const blockBefore = new Date(
+          now.getTime() + SCHEDULED_ACCEPT_BLOCK_MINUTES * 60_000,
+        );
         const order = await repository
           .createQueryBuilder('order')
           .setLock('pessimistic_write')
@@ -344,10 +408,43 @@ export class OrdersService {
             message: 'Order has already been accepted or closed',
           });
         }
-        if (order.scheduledFor && order.scheduledFor > new Date()) {
+        const active = await repository
+          .createQueryBuilder('active')
+          .where('active.driverUserId = :driverUserId', {
+            driverUserId: driver.userId,
+          })
+          .andWhere(
+            new Brackets((query) => {
+              query
+                .where('active.status IN (:...drivingStatuses)', {
+                  drivingStatuses: DRIVING_ORDER_STATUSES,
+                })
+                .orWhere(
+                  `(
+                    active.status = :acceptedStatus
+                    AND (
+                      active.scheduledFor IS NULL
+                      OR active.scheduledFor <= :blockBefore
+                    )
+                  )`,
+                  {
+                    acceptedStatus: OrderStatus.Accepted,
+                    blockBefore,
+                  },
+                );
+            }),
+          )
+          .getOne();
+        const canReserveDuringActive =
+          order.scheduledFor !== null &&
+          order.scheduledFor >
+            new Date(
+              now.getTime() + SCHEDULED_RESERVATION_CONFLICT_MINUTES * 60_000,
+            );
+        if (active && !canReserveDuringActive) {
           throw new ConflictException({
-            code: 'SCHEDULED_ORDER_NOT_AVAILABLE',
-            message: 'This order is not available before its scheduled time',
+            code: 'DRIVER_ALREADY_HAS_ACTIVE_ORDER',
+            message: 'Driver already has an active order',
           });
         }
         const visibleAt = new Date(
@@ -364,6 +461,36 @@ export class OrdersService {
             code: 'ORDER_KIND_DISABLED',
             message: 'This order kind is disabled in driver settings',
           });
+        }
+        if (order.scheduledFor) {
+          const conflictFrom = new Date(
+            order.scheduledFor.getTime() -
+              SCHEDULED_RESERVATION_CONFLICT_MINUTES * 60_000,
+          );
+          const conflictTo = new Date(
+            order.scheduledFor.getTime() +
+              SCHEDULED_RESERVATION_CONFLICT_MINUTES * 60_000,
+          );
+          const conflictingReservation = await repository
+            .createQueryBuilder('reservation')
+            .where('reservation.driverUserId = :driverUserId', {
+              driverUserId: driver.userId,
+            })
+            .andWhere('reservation.status = :accepted', {
+              accepted: OrderStatus.Accepted,
+            })
+            .andWhere('reservation.scheduledFor BETWEEN :from AND :to', {
+              from: conflictFrom,
+              to: conflictTo,
+            })
+            .getOne();
+          if (conflictingReservation) {
+            throw new ConflictException({
+              code: 'SCHEDULED_ORDER_CONFLICT',
+              message:
+                'Another scheduled order is too close to the selected time',
+            });
+          }
         }
 
         order.driverUserId = driver.userId;
@@ -397,7 +524,7 @@ export class OrdersService {
   ): Promise<ReturnType<OrdersService['toResponse']>> {
     await this.driverWork.assertApprovedDriver(driver);
     const settings =
-      nextStatus === OrderStatus.Started
+      nextStatus === OrderStatus.Waiting || nextStatus === OrderStatus.Started
         ? await this.serviceSettings.get()
         : null;
     await this.dataSource.transaction(async (manager) => {
@@ -418,6 +545,17 @@ export class OrdersService {
       if (order.status === nextStatus) {
         return;
       }
+      if (
+        nextStatus === OrderStatus.DriverEnRoute &&
+        order.scheduledFor &&
+        order.scheduledFor > new Date(Date.now() + 15 * 60_000)
+      ) {
+        throw new ConflictException({
+          code: 'SCHEDULED_ORDER_TOO_EARLY',
+          message:
+            'A scheduled order can be started no earlier than 15 minutes before pickup',
+        });
+      }
       const allowed = DRIVER_TRANSITIONS[order.status] ?? [];
       if (!allowed.includes(nextStatus)) {
         throw new ConflictException({
@@ -433,6 +571,9 @@ export class OrdersService {
       const previousStatus = order.status;
       order.status = nextStatus;
       this.setStatusTimestamp(order, nextStatus);
+      if (nextStatus === OrderStatus.Waiting && settings) {
+        this.startPaidWaiting(order, settings.waitingBaseFee);
+      }
       if (
         nextStatus === OrderStatus.Started &&
         order.waitingStartedAt &&
@@ -441,6 +582,7 @@ export class OrdersService {
         this.applyWaitingCharge(
           order,
           settings.freeWaitingMinutes,
+          settings.waitingBaseFee,
           settings.waitingPricePerMinute,
         );
       }
@@ -572,6 +714,74 @@ export class OrdersService {
     return announced;
   }
 
+  async sendScheduledReminders(): Promise<number> {
+    const now = new Date();
+    const candidates = await this.orders.find({
+      where: {
+        status: OrderStatus.Accepted,
+        scheduledFor: LessThanOrEqual(new Date(now.getTime() + 60 * 60_000)),
+      },
+      select: { id: true },
+      take: 100,
+    });
+    let sent = 0;
+    for (const candidate of candidates) {
+      await this.dataSource.transaction(async (manager) => {
+        const repository = manager.getRepository(OrderEntity);
+        const order = await repository
+          .createQueryBuilder('order')
+          .setLock('pessimistic_write')
+          .where('order.id = :id', { id: candidate.id })
+          .getOne();
+        if (
+          !order ||
+          order.status !== OrderStatus.Accepted ||
+          !order.driverUserId ||
+          !order.scheduledFor ||
+          order.scheduledFor <= now
+        ) {
+          return;
+        }
+        const minutes = Math.ceil(
+          (order.scheduledFor.getTime() - now.getTime()) / 60_000,
+        );
+        let reminderMinutes: 5 | 15 | 60 | null = null;
+        if (minutes <= 5 && !order.scheduledFiveMinutesNotifiedAt) {
+          reminderMinutes = 5;
+          order.scheduledOneHourNotifiedAt ??= now;
+          order.scheduledFifteenMinutesNotifiedAt ??= now;
+          order.scheduledFiveMinutesNotifiedAt = now;
+        } else if (minutes <= 15 && !order.scheduledFifteenMinutesNotifiedAt) {
+          reminderMinutes = 15;
+          order.scheduledOneHourNotifiedAt ??= now;
+          order.scheduledFifteenMinutesNotifiedAt = now;
+        } else if (minutes <= 60 && !order.scheduledOneHourNotifiedAt) {
+          reminderMinutes = 60;
+          order.scheduledOneHourNotifiedAt = now;
+        }
+        if (reminderMinutes === null) {
+          return;
+        }
+        await repository.save(order);
+        await this.outbox.enqueue(
+          {
+            aggregateType: 'order',
+            aggregateId: order.id,
+            eventType: 'order.scheduled_reminder',
+            payload: {
+              orderId: order.id,
+              driverUserId: order.driverUserId,
+              reminderMinutes,
+            },
+          },
+          manager,
+        );
+        sent++;
+      });
+    }
+    return sent;
+  }
+
   async markArrivalSoon(
     orderId: string,
     driver: AuthenticatedUser,
@@ -669,6 +879,7 @@ export class OrdersService {
       order.canceledAt = new Date();
       order.canceledByUserId = currentUser.userId;
       order.cancellationReason = reason;
+      order.cancellationReasonCode = input.reasonCode?.trim() || null;
       order.cancellationFeeAmount =
         currentUser.role === UserRole.Passenger
           ? this.passengerCancellationFee(order)
@@ -805,6 +1016,7 @@ export class OrdersService {
       completedAt: order.completedAt,
       canceledAt: order.canceledAt,
       cancellationReason: order.cancellationReason,
+      cancellationReasonCode: order.cancellationReasonCode,
       createdAt: order.createdAt,
       updatedAt: order.updatedAt,
     };
@@ -1007,7 +1219,8 @@ export class OrdersService {
 
   private applyWaitingCharge(
     order: OrderEntity,
-    freeWaitingMinutes: number,
+    includedMinutes: number,
+    baseFee: number,
     pricePerMinute: number,
   ): void {
     if (!order.waitingStartedAt) {
@@ -1016,13 +1229,22 @@ export class OrdersService {
     const elapsedMinutes = Math.floor(
       (Date.now() - order.waitingStartedAt.getTime()) / 60_000,
     );
-    const paidMinutes = Math.max(0, elapsedMinutes - freeWaitingMinutes);
-    const nextCharge = paidMinutes * pricePerMinute;
+    const paidMinutes = Math.max(0, elapsedMinutes - includedMinutes);
+    const nextCharge = baseFee + paidMinutes * pricePerMinute;
     const difference = nextCharge - order.waitingChargeAmount;
     if (difference > 0) {
       order.fareAmount += difference;
       order.waitingChargeAmount = nextCharge;
     }
+  }
+
+  private startPaidWaiting(order: OrderEntity, baseFee: number): void {
+    if (baseFee <= order.waitingChargeAmount) {
+      return;
+    }
+    const difference = baseFee - order.waitingChargeAmount;
+    order.fareAmount += difference;
+    order.waitingChargeAmount = baseFee;
   }
 
   private isUniqueViolation(error: unknown): boolean {

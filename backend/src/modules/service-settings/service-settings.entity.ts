@@ -17,6 +17,9 @@ export class ServiceSettingsEntity {
   @Column({ name: 'free_waiting_minutes', type: 'integer' })
   freeWaitingMinutes!: number;
 
+  @Column({ name: 'waiting_base_fee', type: 'integer', default: 50 })
+  waitingBaseFee!: number;
+
   @Column({ name: 'waiting_price_per_minute', type: 'integer' })
   waitingPricePerMinute!: number;
 

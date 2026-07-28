@@ -100,7 +100,7 @@ export function SettingsPage() {
               }
             />
             <NumberField
-              label="Бесплатное ожидание"
+              label="Минуты, включённые в старт ожидания"
               value={form.freeWaitingMinutes}
               min={0}
               max={60}
@@ -108,7 +108,15 @@ export function SettingsPage() {
               onChange={(value) => setNumber("freeWaitingMinutes", value)}
             />
             <NumberField
-              label="Цена минуты ожидания"
+              label="Стоимость первых минут ожидания"
+              value={form.waitingBaseFee}
+              min={0}
+              max={5000}
+              suffix="₽"
+              onChange={(value) => setNumber("waitingBaseFee", value)}
+            />
+            <NumberField
+              label="Цена минуты после включённого времени"
               value={form.waitingPricePerMinute}
               min={0}
               max={1000}

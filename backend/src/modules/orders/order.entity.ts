@@ -102,6 +102,27 @@ export class OrderEntity {
   })
   scheduledAnnouncedAt!: Date | null;
 
+  @Column({
+    name: 'scheduled_one_hour_notified_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  scheduledOneHourNotifiedAt!: Date | null;
+
+  @Column({
+    name: 'scheduled_fifteen_minutes_notified_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  scheduledFifteenMinutesNotifiedAt!: Date | null;
+
+  @Column({
+    name: 'scheduled_five_minutes_notified_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  scheduledFiveMinutesNotifiedAt!: Date | null;
+
   @Column({ name: 'tariff_setting_id', type: 'uuid' })
   tariffSettingId!: string;
 
@@ -198,6 +219,14 @@ export class OrderEntity {
     nullable: true,
   })
   cancellationReason!: string | null;
+
+  @Column({
+    name: 'cancellation_reason_code',
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+  })
+  cancellationReasonCode!: string | null;
 
   @VersionColumn()
   version!: number;

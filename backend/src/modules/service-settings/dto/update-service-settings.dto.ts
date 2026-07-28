@@ -25,6 +25,12 @@ export class UpdateServiceSettingsDto {
   @IsOptional()
   @IsInt()
   @Min(0)
+  @Max(5000)
+  waitingBaseFee?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
   @Max(1000)
   waitingPricePerMinute?: number;
 

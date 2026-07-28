@@ -757,17 +757,37 @@ describe('API (e2e)', () => {
           const ids = (body as { items: Array<{ id: string }> }).items.map(
             (item) => item.id,
           );
-          expect(ids).not.toContain(scheduledOrder.id);
+          expect(ids).toContain(scheduledOrder.id);
         });
 
       await request(app.getHttpServer())
         .post(`/api/v1/orders/${scheduledOrder.id}/accept`)
         .set('Authorization', authorization.driver)
-        .expect(409)
+        .expect(200)
         .expect(({ body }) => {
-          expect((body as { code: string }).code).toBe(
-            'SCHEDULED_ORDER_NOT_AVAILABLE',
+          expect(body).toMatchObject({
+            id: scheduledOrder.id,
+            status: 'accepted',
+          });
+        });
+
+      await request(app.getHttpServer())
+        .get('/api/v1/orders/reservations')
+        .set('Authorization', authorization.driver)
+        .expect(200)
+        .expect(({ body }) => {
+          const ids = (body as { items: Array<{ id: string }> }).items.map(
+            (item) => item.id,
           );
+          expect(ids).toContain(scheduledOrder.id);
+        });
+
+      await request(app.getHttpServer())
+        .get('/api/v1/orders/active')
+        .set('Authorization', authorization.driver)
+        .expect(200)
+        .expect(({ body }) => {
+          expect(body).toBeNull();
         });
 
       await database.query(
@@ -835,6 +855,29 @@ describe('API (e2e)', () => {
         200, 409,
       ]);
 
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${order.id}/messages`)
+        .set('Authorization', authorization.passenger)
+        .send({ body: 'Жду у подъезда' })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${order.id}/messages`)
+        .set('Authorization', authorization.driver)
+        .send({ body: 'Буду через пару минут' })
+        .expect(201);
+      await request(app.getHttpServer())
+        .get(`/api/v1/orders/${order.id}/messages`)
+        .set('Authorization', authorization.passenger)
+        .expect(200)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            items: [
+              { body: 'Жду у подъезда' },
+              { body: 'Буду через пару минут' },
+            ],
+          });
+        });
+
       for (const path of ['break', 'end']) {
         const call = request(app.getHttpServer())
           .post(`/api/v1/driver/work/${path}`)
@@ -860,13 +903,39 @@ describe('API (e2e)', () => {
           );
         });
 
-      for (const status of ['driver_en_route', 'arrived', 'started']) {
+      for (const status of ['driver_en_route', 'arrived']) {
         await request(app.getHttpServer())
           .patch(`/api/v1/orders/${order.id}/status`)
           .set('Authorization', authorization.driver)
           .send({ status })
           .expect(200);
       }
+      await request(app.getHttpServer())
+        .patch(`/api/v1/orders/${order.id}/status`)
+        .set('Authorization', authorization.driver)
+        .send({ status: 'waiting' })
+        .expect(200)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            fareAmount: order.fareAmount + 50,
+            waitingChargeAmount: 50,
+          });
+        });
+      await database.query(
+        "UPDATE orders SET waiting_started_at = NOW() - INTERVAL '12 minutes' WHERE id = $1",
+        [order.id],
+      );
+      await request(app.getHttpServer())
+        .patch(`/api/v1/orders/${order.id}/status`)
+        .set('Authorization', authorization.driver)
+        .send({ status: 'started' })
+        .expect(200)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            fareAmount: order.fareAmount + 60,
+            waitingChargeAmount: 60,
+          });
+        });
       await request(app.getHttpServer())
         .patch(`/api/v1/orders/${order.id}/status`)
         .set('Authorization', authorization.driver)
@@ -906,6 +975,180 @@ describe('API (e2e)', () => {
         .set('Authorization', authorization.driver)
         .send({ status: 'completed' })
         .expect(200);
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${order.id}/messages`)
+        .set('Authorization', authorization.passenger)
+        .send({ body: 'Сообщение после завершения' })
+        .expect(409)
+        .expect(({ body }) => {
+          expect((body as { code: string }).code).toBe('ORDER_CHAT_CLOSED');
+        });
+
+      for (const token of [authorization.passenger, authorization.driver]) {
+        await request(app.getHttpServer())
+          .get('/api/v1/engagement/ratings/pending')
+          .set('Authorization', token)
+          .expect(200)
+          .expect(({ body }) => {
+            expect(
+              (body as { items: Array<{ orderId: string }> }).items.map(
+                (item) => item.orderId,
+              ),
+            ).toContain(order.id);
+          });
+      }
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${order.id}/rating`)
+        .set('Authorization', authorization.passenger)
+        .send({ score: 4, comment: 'Аккуратная поездка' })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${order.id}/rating`)
+        .set('Authorization', authorization.driver)
+        .send({ score: 2, comment: 'Долго не выходил' })
+        .expect(201);
+      await request(app.getHttpServer())
+        .post(`/api/v1/orders/${order.id}/rating`)
+        .set('Authorization', authorization.passenger)
+        .send({ score: 5 })
+        .expect(409)
+        .expect(({ body }) => {
+          expect((body as { code: string }).code).toBe('ORDER_ALREADY_RATED');
+        });
+
+      const surveyCreated = await request(app.getHttpServer())
+        .post('/api/v1/admin/surveys')
+        .set('Authorization', authorization.admin)
+        .send({
+          title: 'Тестовый опрос пассажира',
+          question: 'Все ли было понятно?',
+          targetRole: 'passenger',
+          answerOptions: ['Да', 'Нет'],
+          allowComment: true,
+          enabled: true,
+          startsAt: null,
+          displayTime: null,
+          frequencyDays: null,
+          everyCompletedTrips: null,
+        })
+        .expect(201);
+      const surveyId = (surveyCreated.body as { id: string }).id;
+      await request(app.getHttpServer())
+        .get('/api/v1/engagement/surveys/due')
+        .set('Authorization', authorization.passenger)
+        .expect(200)
+        .expect(({ body }) => {
+          expect(
+            (body as { items: Array<{ id: string }> }).items.map(
+              (item) => item.id,
+            ),
+          ).toContain(surveyId);
+        });
+      await request(app.getHttpServer())
+        .post(`/api/v1/engagement/surveys/${surveyId}/responses`)
+        .set('Authorization', authorization.passenger)
+        .send({ answer: 'Да', comment: 'Все работает' })
+        .expect(201);
+      await request(app.getHttpServer())
+        .get(`/api/v1/admin/surveys/${surveyId}/responses`)
+        .set('Authorization', authorization.admin)
+        .expect(200)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            survey: { id: surveyId },
+            items: [
+              {
+                answer: 'Да',
+                comment: 'Все работает',
+                user: { id: passengerSession.user.id, role: 'passenger' },
+              },
+            ],
+          });
+        });
+
+      const announcementCreated = await request(app.getHttpServer())
+        .post('/api/v1/admin/announcements')
+        .set('Authorization', authorization.admin)
+        .send({
+          title: 'Предупреждение',
+          body: 'Пожалуйста, соблюдайте правила сервиса.',
+          targetUserId: passengerSession.user.id,
+          enabled: true,
+        })
+        .expect(201);
+      const announcementId = (announcementCreated.body as { id: string }).id;
+      await request(app.getHttpServer())
+        .get('/api/v1/engagement/announcements/pending')
+        .set('Authorization', authorization.passenger)
+        .expect(200)
+        .expect(({ body }) => {
+          expect(
+            (body as { items: Array<{ id: string }> }).items.map(
+              (item) => item.id,
+            ),
+          ).toContain(announcementId);
+        });
+      await request(app.getHttpServer())
+        .post(`/api/v1/engagement/announcements/${announcementId}/acknowledge`)
+        .set('Authorization', authorization.driver)
+        .expect(403);
+      await request(app.getHttpServer())
+        .post(`/api/v1/engagement/announcements/${announcementId}/acknowledge`)
+        .set('Authorization', authorization.passenger)
+        .expect(200);
+      await request(app.getHttpServer())
+        .get('/api/v1/engagement/announcements/pending')
+        .set('Authorization', authorization.passenger)
+        .expect(200)
+        .expect(({ body }) => {
+          expect(
+            (body as { items: Array<{ id: string }> }).items.map(
+              (item) => item.id,
+            ),
+          ).not.toContain(announcementId);
+        });
+
+      await request(app.getHttpServer())
+        .get('/api/v1/admin/reputation')
+        .set('Authorization', authorization.admin)
+        .expect(200)
+        .expect(({ body }) => {
+          const items = (
+            body as {
+              items: Array<{
+                id: string;
+                averageRating: number;
+                ratingCount: number;
+              }>;
+            }
+          ).items;
+          expect(
+            items.find((item) => item.id === approvedDriverSession.user.id),
+          ).toMatchObject({ averageRating: 4, ratingCount: 1 });
+          expect(
+            items.find((item) => item.id === passengerSession.user.id),
+          ).toMatchObject({ averageRating: 2, ratingCount: 1 });
+        });
+      await request(app.getHttpServer())
+        .get(`/api/v1/admin/reputation/${passengerSession.user.id}/ratings`)
+        .set('Authorization', authorization.admin)
+        .expect(200)
+        .expect(({ body }) => {
+          expect(body).toMatchObject({
+            user: { id: passengerSession.user.id, role: 'passenger' },
+            items: [
+              {
+                orderId: order.id,
+                score: 2,
+                comment: 'Долго не выходил',
+                author: {
+                  id: approvedDriverSession.user.id,
+                  role: 'driver',
+                },
+              },
+            ],
+          });
+        });
 
       await request(app.getHttpServer())
         .get('/api/v1/orders/active')
@@ -922,7 +1165,7 @@ describe('API (e2e)', () => {
         .expect(({ body }) => {
           expect(body).toMatchObject({
             status: 'online',
-            earnings24h: order.fareAmount,
+            earnings24h: order.fareAmount + 60,
             visibilityDelaySeconds: 25,
           });
         });
@@ -1283,6 +1526,27 @@ describe('API (e2e)', () => {
       `
         DELETE FROM support_conversations
         WHERE user_id IN (SELECT id FROM users WHERE phone = ANY($1))
+      `,
+      [testPhones],
+    );
+    await database.query(
+      `
+        DELETE FROM survey_templates
+        WHERE created_by_user_id IN (
+          SELECT id FROM users WHERE phone = ANY($1)
+        )
+      `,
+      [testPhones],
+    );
+    await database.query(
+      `
+        DELETE FROM user_announcements
+        WHERE created_by_user_id IN (
+          SELECT id FROM users WHERE phone = ANY($1)
+        )
+        OR target_user_id IN (
+          SELECT id FROM users WHERE phone = ANY($1)
+        )
       `,
       [testPhones],
     );

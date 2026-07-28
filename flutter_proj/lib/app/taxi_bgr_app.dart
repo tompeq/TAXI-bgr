@@ -9,6 +9,8 @@ import '../core/auth/registration_draft_store.dart';
 import '../core/auth/auth_session_store.dart';
 import '../core/config/app_config.dart';
 import '../core/driver_work/driver_work_api_client.dart';
+import '../core/engagement/engagement_api_client.dart';
+import '../core/engagement/engagement_store.dart';
 import '../core/finance/driver_finance_api_client.dart';
 import '../core/models/app_role.dart';
 import '../core/orders/order_api_client.dart';
@@ -39,6 +41,8 @@ class _TaxiBgrAppState extends State<TaxiBgrApp> with WidgetsBindingObserver {
   late final OrderApiClient _ordersApi;
   late final DriverWorkApiClient _driverWorkApi;
   late final DriverFinanceApiClient _driverFinanceApi;
+  late final EngagementApiClient _engagementApi;
+  late final EngagementStore _engagementStore;
   late final OrderStore _orderStore;
   late final SupportApiClient _supportApi;
   late final SupportStore _supportStore;
@@ -62,6 +66,11 @@ class _TaxiBgrAppState extends State<TaxiBgrApp> with WidgetsBindingObserver {
     _ordersApi = OrderApiClient(baseUrl: AppConfig.apiBaseUrl);
     _driverWorkApi = DriverWorkApiClient(baseUrl: AppConfig.apiBaseUrl);
     _driverFinanceApi = DriverFinanceApiClient(baseUrl: AppConfig.apiBaseUrl);
+    _engagementApi = EngagementApiClient(baseUrl: AppConfig.apiBaseUrl);
+    _engagementStore = EngagementStore(
+      api: _engagementApi,
+      auth: _authController,
+    );
     _orderStore = OrderStore(
       api: _ordersApi,
       driverWorkApi: _driverWorkApi,
@@ -93,6 +102,7 @@ class _TaxiBgrAppState extends State<TaxiBgrApp> with WidgetsBindingObserver {
     _ordersApi.close();
     _driverWorkApi.close();
     _driverFinanceApi.close();
+    _engagementApi.close();
     _supportApi.close();
     _orderStore.dispose();
     _trackingClient.dispose();
@@ -180,6 +190,7 @@ class _TaxiBgrAppState extends State<TaxiBgrApp> with WidgetsBindingObserver {
       AppRole.passenger => PassengerHomeScreen(
         orderStore: _orderStore,
         supportStore: _supportStore,
+        engagementStore: _engagementStore,
         trackingClient: _trackingClient,
         onSwitchToDriver: () => _openOrSwitchRole(AppRole.driver),
         onLogout: _logout,
@@ -187,6 +198,7 @@ class _TaxiBgrAppState extends State<TaxiBgrApp> with WidgetsBindingObserver {
       AppRole.driver when session.user.isApprovedDriver => DriverHomeScreen(
         orderStore: _orderStore,
         supportStore: _supportStore,
+        engagementStore: _engagementStore,
         trackingClient: _trackingClient,
         orderEvents: _pushNotifications.events,
         onSwitchToPassenger: () => _openOrSwitchRole(AppRole.passenger),

@@ -70,6 +70,12 @@ export class OrdersController {
     return this.orders.listBoard(query, driver);
   }
 
+  @Get('reservations')
+  @ApiOperation({ summary: 'List future orders reserved by the driver' })
+  reservations(@CurrentUser() driver: AuthenticatedUser) {
+    return this.orders.listDriverReservations(driver);
+  }
+
   @Get(':orderId/transfer-details')
   @ApiOperation({
     summary: 'Get the assigned driver transfer details for a passenger order',

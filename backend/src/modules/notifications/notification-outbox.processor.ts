@@ -22,6 +22,7 @@ const NOTIFIABLE_EVENT_TYPES = [
   'order.created',
   'order.status_changed',
   'order.approaching',
+  'order.scheduled_reminder',
 ];
 
 @Injectable()
@@ -107,12 +108,43 @@ export class NotificationOutboxProcessor {
       await this.notifyDriversAboutOrder(event.aggregateId);
       return;
     }
+    if (event.eventType === 'order.scheduled_reminder') {
+      await this.notifyScheduledDriver(event);
+      return;
+    }
     if (
       event.eventType === 'order.status_changed' ||
       event.eventType === 'order.approaching'
     ) {
       await this.notifyOrderOwner(event);
     }
+  }
+
+  private async notifyScheduledDriver(event: OutboxEventEntity): Promise<void> {
+    const driverUserId = event.payload.driverUserId as string | undefined;
+    const reminderMinutes = Number(event.payload.reminderMinutes);
+    if (!driverUserId || ![5, 15, 60].includes(reminderMinutes)) {
+      return;
+    }
+    const order = await this.dataSource
+      .getRepository(OrderEntity)
+      .findOneBy({ id: event.aggregateId });
+    if (!order) {
+      return;
+    }
+    const title =
+      reminderMinutes === 60
+        ? 'Заказ через час'
+        : `Заказ через ${reminderMinutes} минут`;
+    await this.notifications.sendToUsers([driverUserId], {
+      title,
+      body: `${order.pickupAddress} → ${order.destinationAddress}`,
+      data: {
+        type: 'scheduled_order_reminder',
+        orderId: order.id,
+        minutes: String(reminderMinutes),
+      },
+    });
   }
 
   private async notifyDriversAboutOrder(orderId: string): Promise<void> {

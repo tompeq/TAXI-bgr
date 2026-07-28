@@ -16,6 +16,13 @@ import type {
   SupportConversation,
   SupportConversationList,
   SupportConversationStatus,
+  SurveyList,
+  SurveyResponseList,
+  SurveyTemplate,
+  AnnouncementList,
+  UserAnnouncement,
+  ReputationList,
+  UserRatingDetails,
 } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000/api/v1";
@@ -245,4 +252,49 @@ export const adminApi = {
       method: "PATCH",
       body: JSON.stringify({ status }),
     }),
+  surveys: () => apiRequest<SurveyList>("/admin/surveys"),
+  createSurvey: (survey: Omit<SurveyTemplate, "id" | "responseCount">) =>
+    apiRequest<SurveyTemplate>("/admin/surveys", {
+      method: "POST",
+      body: JSON.stringify(survey),
+    }),
+  updateSurvey: (
+    id: string,
+    survey: Omit<SurveyTemplate, "id" | "responseCount">,
+  ) =>
+    apiRequest<SurveyTemplate>(`/admin/surveys/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(survey),
+    }),
+  surveyResponses: (id: string) =>
+    apiRequest<SurveyResponseList>(`/admin/surveys/${id}/responses`),
+  announcements: () =>
+    apiRequest<AnnouncementList>("/admin/announcements"),
+  createAnnouncement: (announcement: {
+    title: string;
+    body: string;
+    targetRole: "passenger" | "driver" | "all" | null;
+    targetUserId: string | null;
+    enabled: boolean;
+  }) =>
+    apiRequest<UserAnnouncement>("/admin/announcements", {
+      method: "POST",
+      body: JSON.stringify(announcement),
+    }),
+  updateAnnouncement: (
+    id: string,
+    announcement: Partial<
+      Pick<
+        UserAnnouncement,
+        "title" | "body" | "targetRole" | "targetUserId" | "enabled"
+      >
+    >,
+  ) =>
+    apiRequest<UserAnnouncement>(`/admin/announcements/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(announcement),
+    }),
+  reputation: () => apiRequest<ReputationList>("/admin/reputation"),
+  userRatings: (userId: string) =>
+    apiRequest<UserRatingDetails>(`/admin/reputation/${userId}/ratings`),
 };

@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../../core/data/local_catalog.dart';
 import '../../core/driver_work/driver_work_models.dart';
+import '../../core/engagement/engagement_store.dart';
 import '../../core/finance/finance_models.dart';
 import '../../core/models/address_point.dart';
 import '../../core/models/geo_point.dart';
@@ -16,11 +19,14 @@ import '../../core/tracking/tracking_client.dart';
 import '../../core/tracking/vehicle_location.dart';
 import '../map/taxi_map.dart';
 import '../support/support_chat_sheet.dart';
+import '../engagement/engagement_dialogs.dart';
+import '../engagement/order_chat_sheet.dart';
 
 class DriverHomeScreen extends StatefulWidget {
   const DriverHomeScreen({
     required this.orderStore,
     required this.supportStore,
+    required this.engagementStore,
     this.trackingClient,
     this.orderEvents,
     this.onSwitchToPassenger,
@@ -30,6 +36,7 @@ class DriverHomeScreen extends StatefulWidget {
 
   final OrderStore orderStore;
   final SupportStore supportStore;
+  final EngagementStore engagementStore;
   final TrackingClient? trackingClient;
   final Stream<String>? orderEvents;
   final Future<void> Function()? onSwitchToPassenger;
@@ -42,6 +49,7 @@ class DriverHomeScreen extends StatefulWidget {
 class _DriverHomeScreenState extends State<DriverHomeScreen>
     with WidgetsBindingObserver {
   static const _locationService = DeviceLocationService();
+  static const _preferences = FlutterSecureStorage();
 
   Timer? _boardTimer;
   StreamSubscription<VehicleLocation>? _locationSubscription;
@@ -58,6 +66,8 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
   bool _startingLocation = false;
   bool _surveyOpen = false;
   bool _statusUpdateInFlight = false;
+  bool _compactBoard = true;
+  bool _engagementDialogOpen = false;
 
   @override
   void initState() {
@@ -66,13 +76,17 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
     widget.orderStore.addListener(_onStoreChanged);
     widget.trackingClient?.addListener(_onTrackingChanged);
     _orderEventSubscription = widget.orderEvents?.listen((event) {
-      if (event == 'new_order' &&
+      if ((event == 'new_order' || event == 'scheduled_order_reminder') &&
           widget.orderStore.driverWorkState?.status ==
               DriverLineStatus.online) {
         unawaited(_refreshBoard());
       }
     });
+    unawaited(_loadBoardPreference());
     unawaited(_loadDriverState());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_showPendingEngagement());
+    });
   }
 
   @override
@@ -180,17 +194,25 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
                         ? () => _updateOrderStatus(OrderStatus.waiting)
                         : null,
                     onCancel: () => _showCancelSheet(activeOrder),
+                    onChat: () => _showOrderChat(activeOrder),
+                    onUpcomingOrders: store.openOrders.isEmpty
+                        ? null
+                        : () => _showUpcomingOrders(activeOrder),
                   ),
                 )
               else if (workState?.status == DriverLineStatus.online)
                 _OrderBoardSheet(
                   orders: store.openOrders,
+                  reservations: store.scheduledDriverOrders,
                   announcement: store.boardAnnouncement,
                   loading: store.loading,
+                  compact: _compactBoard,
+                  acceptingBlocked: store.hasImminentReservation,
                   visibilityDelaySeconds:
                       workState?.visibilityDelaySeconds ?? 0,
                   onRefresh: _refreshBoard,
                   onAccept: _acceptOrder,
+                  onCompactChanged: _setCompactBoard,
                 )
               else
                 Align(
@@ -458,6 +480,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
         _trackedOrderId = null;
         await widget.orderStore.loadDueDriverSurveys();
         unawaited(_showDueSurvey());
+        unawaited(_showPendingEngagement());
       }
     } on Object {
       _showStoreError();
@@ -515,6 +538,126 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
     );
   }
 
+  Future<void> _loadBoardPreference() async {
+    final value = await _preferences.read(key: 'driver_compact_board');
+    if (mounted && value != null) {
+      setState(() => _compactBoard = value != 'false');
+    }
+  }
+
+  Future<void> _setCompactBoard(bool value) async {
+    setState(() => _compactBoard = value);
+    await _preferences.write(
+      key: 'driver_compact_board',
+      value: value.toString(),
+    );
+  }
+
+  Future<void> _showPendingEngagement() async {
+    if (!mounted || _engagementDialogOpen) return;
+    _engagementDialogOpen = true;
+    try {
+      await showPendingEngagementDialogs(context, widget.engagementStore);
+    } finally {
+      _engagementDialogOpen = false;
+    }
+  }
+
+  void _showOrderChat(TaxiOrder order) {
+    final userId = widget.engagementStore.auth.session?.user.id;
+    if (userId == null) return;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => OrderChatSheet(
+        store: widget.engagementStore,
+        orderId: order.id,
+        currentUserId: userId,
+      ),
+    );
+  }
+
+  void _showUpcomingOrders(TaxiOrder activeOrder) {
+    final orders = widget.orderStore.openOrders;
+    final nearestId = _nearestOrderId(activeOrder, orders);
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * 0.68,
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+            children: [
+              const Text(
+                'Заказы после текущего',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Значком отмечен заказ с ближайшей точкой подачи.',
+                style: TextStyle(color: Color(0xFF666666)),
+              ),
+              const SizedBox(height: 12),
+              ...orders.map(
+                (order) => Padding(
+                  padding: const EdgeInsets.only(bottom: 7),
+                  child: _BoardOrderTile(
+                    order: order,
+                    compact: _compactBoard,
+                    nearest: order.id == nearestId,
+                    onAccept:
+                        order.scheduled &&
+                            order.tripTime.difference(DateTime.now()) >
+                                const Duration(minutes: 30)
+                        ? () {
+                            Navigator.of(context).pop();
+                            unawaited(_acceptOrder(order.id));
+                          }
+                        : null,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String? _nearestOrderId(TaxiOrder activeOrder, List<TaxiOrder> orders) {
+    String? nearestId;
+    var nearestDistance = double.infinity;
+    for (final order in orders) {
+      final distance = _distanceMeters(
+        activeOrder.to.coordinates,
+        order.from.coordinates,
+      );
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestId = order.id;
+      }
+    }
+    return nearestId;
+  }
+
+  double _distanceMeters(GeoPoint from, GeoPoint to) {
+    const radius = 6371000.0;
+    final latitudeDelta = (to.latitude - from.latitude) * math.pi / 180;
+    final longitudeDelta = (to.longitude - from.longitude) * math.pi / 180;
+    final fromLatitude = from.latitude * math.pi / 180;
+    final toLatitude = to.latitude * math.pi / 180;
+    final a =
+        math.sin(latitudeDelta / 2) * math.sin(latitudeDelta / 2) +
+        math.cos(fromLatitude) *
+            math.cos(toLatitude) *
+            math.sin(longitudeDelta / 2) *
+            math.sin(longitudeDelta / 2);
+    return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+  }
+
   Future<void> _showDriverMenu() async {
     final workState = widget.orderStore.driverWorkState;
     await showModalBottomSheet<void>(
@@ -526,6 +669,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
         debt: widget.orderStore.driverDebt,
         earnings: widget.orderStore.driverEarnings24h,
         paymentDetails: widget.orderStore.driverPaymentDetails,
+        reservations: widget.orderStore.scheduledDriverOrders,
         onSettingsChanged: _updateSettings,
         onPaymentDetailsChanged: _updatePaymentDetails,
         onBreak: _startBreak,
@@ -597,14 +741,23 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
 
   Future<void> _showCancelSheet(TaxiOrder order) async {
     const reasons = [
-      'Пассажир не вышел',
-      'Пассажир не отвечает',
-      'Пассажир ведёт себя неадекватно',
-      'Число пассажиров не соответствует заявке',
-      'Пассажиров больше посадочных мест',
-      'Пассажир отказался оплатить заранее',
+      (code: 'passenger_no_show', label: 'Пассажир не вышел'),
+      (code: 'passenger_no_answer', label: 'Пассажир не отвечает'),
+      (code: 'passenger_aggressive', label: 'Пассажир ведёт себя неадекватно'),
+      (
+        code: 'passenger_count_mismatch',
+        label: 'Число пассажиров не соответствует заявке',
+      ),
+      (
+        code: 'passenger_over_capacity',
+        label: 'Пассажиров больше посадочных мест',
+      ),
+      (
+        code: 'passenger_payment_refused',
+        label: 'Пассажир отказался оплатить заранее',
+      ),
     ];
-    final reason = await showModalBottomSheet<String>(
+    final reason = await showModalBottomSheet<({String code, String label})>(
       context: context,
       showDragHandle: true,
       builder: (context) => SafeArea(
@@ -620,7 +773,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
             ...reasons.map(
               (item) => ListTile(
                 contentPadding: EdgeInsets.zero,
-                title: Text(item),
+                title: Text(item.label),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => Navigator.of(context).pop(item),
               ),
@@ -633,7 +786,10 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
       return;
     }
     try {
-      await widget.orderStore.cancelActiveOrder(reason);
+      await widget.orderStore.cancelActiveOrder(
+        reason.label,
+        reasonCode: reason.code,
+      );
       widget.trackingClient?.clearOrder();
       _trackedOrderId = null;
     } on Object {
@@ -932,19 +1088,27 @@ class _OfflinePanel extends StatelessWidget {
 class _OrderBoardSheet extends StatelessWidget {
   const _OrderBoardSheet({
     required this.orders,
+    required this.reservations,
     required this.announcement,
     required this.loading,
+    required this.compact,
+    required this.acceptingBlocked,
     required this.visibilityDelaySeconds,
     required this.onRefresh,
     required this.onAccept,
+    required this.onCompactChanged,
   });
 
   final List<TaxiOrder> orders;
+  final List<TaxiOrder> reservations;
   final String announcement;
   final bool loading;
+  final bool compact;
+  final bool acceptingBlocked;
   final int visibilityDelaySeconds;
   final Future<void> Function() onRefresh;
   final ValueChanged<String> onAccept;
+  final ValueChanged<bool> onCompactChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -985,6 +1149,15 @@ class _OrderBoardSheet extends StatelessWidget {
                     ),
                   ),
                   IconButton(
+                    tooltip: compact
+                        ? 'Большие карточки'
+                        : 'Компактные карточки',
+                    onPressed: () => onCompactChanged(!compact),
+                    icon: Icon(
+                      compact ? Icons.view_agenda_outlined : Icons.view_list,
+                    ),
+                  ),
+                  IconButton(
                     tooltip: 'Обновить',
                     onPressed: loading ? null : onRefresh,
                     icon: const Icon(Icons.refresh),
@@ -996,6 +1169,21 @@ class _OrderBoardSheet extends StatelessWidget {
                   'Новые заказы появятся через $visibilityDelaySeconds сек.',
                   style: const TextStyle(color: Color(0xFF777777)),
                 ),
+              if (reservations.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                _ReservationSummary(orders: reservations),
+              ],
+              if (acceptingBlocked) ...[
+                const SizedBox(height: 8),
+                const Text(
+                  'До заказа на время осталось меньше 5 минут. '
+                  'Новые заказы временно недоступны.',
+                  style: TextStyle(
+                    color: Color(0xFF9A5B00),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
               if (announcement.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Container(
@@ -1043,7 +1231,11 @@ class _OrderBoardSheet extends StatelessWidget {
                     padding: const EdgeInsets.only(bottom: 7),
                     child: _BoardOrderTile(
                       order: order,
-                      onAccept: () => onAccept(order.id),
+                      compact: compact,
+                      nearest: false,
+                      onAccept: acceptingBlocked
+                          ? null
+                          : () => onAccept(order.id),
                     ),
                   ),
                 ),
@@ -1056,10 +1248,17 @@ class _OrderBoardSheet extends StatelessWidget {
 }
 
 class _BoardOrderTile extends StatelessWidget {
-  const _BoardOrderTile({required this.order, required this.onAccept});
+  const _BoardOrderTile({
+    required this.order,
+    required this.compact,
+    required this.nearest,
+    required this.onAccept,
+  });
 
   final TaxiOrder order;
-  final VoidCallback onAccept;
+  final bool compact;
+  final bool nearest;
+  final VoidCallback? onAccept;
 
   @override
   Widget build(BuildContext context) {
@@ -1072,7 +1271,10 @@ class _BoardOrderTile extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         onTap: onAccept,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+          padding: EdgeInsets.symmetric(
+            horizontal: 11,
+            vertical: compact ? 7 : 11,
+          ),
           child: Column(
             children: [
               Row(
@@ -1093,6 +1295,14 @@ class _BoardOrderTile extends StatelessWidget {
                       ),
                     ),
                   ),
+                  if (nearest) ...[
+                    const Icon(
+                      Icons.near_me,
+                      size: 18,
+                      color: Color(0xFF1769AA),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
                   Text(
                     '${order.fare} ₽',
                     style: const TextStyle(
@@ -1109,12 +1319,91 @@ class _BoardOrderTile extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               _AddressRow(icon: Icons.location_on, text: order.to.title),
+              if (!compact) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Icon(
+                      order.scheduled ? Icons.schedule : Icons.people_outline,
+                      size: 16,
+                      color: const Color(0xFF666666),
+                    ),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        order.scheduled
+                            ? _formatScheduledOrderTime(order.tripTime)
+                            : '${order.passengers} пасс. · ${order.paymentMethod.title}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF666666),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
       ),
     );
   }
+}
+
+class _ReservationSummary extends StatelessWidget {
+  const _ReservationSummary({required this.orders});
+
+  final List<TaxiOrder> orders;
+
+  @override
+  Widget build(BuildContext context) {
+    final first = orders.first;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEAF4FF),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: const Color(0xFFB7D8F5)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.event_available_outlined, size: 21),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  orders.length == 1
+                      ? 'Заказ на время'
+                      : 'Заказов на время: ${orders.length}',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                Text(
+                  '${_formatScheduledOrderTime(first.tripTime)} · '
+                  '${first.from.title}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _formatScheduledOrderTime(DateTime time) {
+  final now = DateTime.now();
+  final day = DateUtils.isSameDay(now, time)
+      ? 'Сегодня'
+      : '${time.day.toString().padLeft(2, '0')}.'
+            '${time.month.toString().padLeft(2, '0')}';
+  return '$day в ${time.hour.toString().padLeft(2, '0')}:'
+      '${time.minute.toString().padLeft(2, '0')}';
 }
 
 class _AddressRow extends StatelessWidget {
@@ -1150,6 +1439,8 @@ class _ActiveOrderPanel extends StatelessWidget {
     required this.onPrimaryAction,
     required this.onWaiting,
     required this.onCancel,
+    required this.onChat,
+    required this.onUpcomingOrders,
   });
 
   final TaxiOrder order;
@@ -1158,6 +1449,8 @@ class _ActiveOrderPanel extends StatelessWidget {
   final VoidCallback onPrimaryAction;
   final VoidCallback? onWaiting;
   final VoidCallback onCancel;
+  final VoidCallback onChat;
+  final VoidCallback? onUpcomingOrders;
 
   @override
   Widget build(BuildContext context) {
@@ -1204,6 +1497,11 @@ class _ActiveOrderPanel extends StatelessWidget {
                     ),
                   ),
                   IconButton(
+                    tooltip: 'Чат с пассажиром',
+                    onPressed: onChat,
+                    icon: const Icon(Icons.chat_bubble_outline),
+                  ),
+                  IconButton(
                     tooltip: 'Отменить заказ',
                     onPressed: onCancel,
                     icon: const Icon(Icons.more_horiz),
@@ -1211,6 +1509,25 @@ class _ActiveOrderPanel extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 12),
+              if (order.status == OrderStatus.waiting) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 9,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF5C4),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    'Ожидание: ${order.waitingCharge} ₽. '
+                    'Первые 10 минут стоят 50 ₽, затем 5 ₽/мин.',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
               SizedBox(
                 width: double.infinity,
                 height: 56,
@@ -1231,6 +1548,17 @@ class _ActiveOrderPanel extends StatelessWidget {
                   ),
                 ),
               ],
+              if (onUpcomingOrders != null) ...[
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton.icon(
+                    onPressed: onUpcomingOrders,
+                    icon: const Icon(Icons.near_me_outlined),
+                    label: const Text('Посмотреть следующие заказы'),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -1245,6 +1573,7 @@ class _DriverMenuSheet extends StatefulWidget {
     required this.debt,
     required this.earnings,
     required this.paymentDetails,
+    required this.reservations,
     required this.onSettingsChanged,
     required this.onPaymentDetailsChanged,
     required this.onBreak,
@@ -1258,6 +1587,7 @@ class _DriverMenuSheet extends StatefulWidget {
   final double debt;
   final double earnings;
   final DriverPaymentDetails? paymentDetails;
+  final List<TaxiOrder> reservations;
   final Future<void> Function({
     bool? acceptsTaxi,
     bool? acceptsDelivery,
@@ -1328,6 +1658,10 @@ class _DriverMenuSheetState extends State<_DriverMenuSheet> {
               ),
             ],
           ),
+          if (widget.reservations.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            _ReservationSummary(orders: widget.reservations),
+          ],
           const SizedBox(height: 8),
           ListTile(
             contentPadding: EdgeInsets.zero,

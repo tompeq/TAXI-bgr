@@ -6,6 +6,8 @@ import Menu from "@mui/icons-material/Menu";
 import PaymentsOutlined from "@mui/icons-material/PaymentsOutlined";
 import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import ForumOutlined from "@mui/icons-material/ForumOutlined";
+import PollOutlined from "@mui/icons-material/PollOutlined";
+import StarOutlined from "@mui/icons-material/StarOutlined";
 import {
   AppBar,
   Avatar,
@@ -35,6 +37,8 @@ const navigation = [
   { to: "/tariffs", label: "Тарифы", icon: <PaymentsOutlined /> },
   { to: "/finance", label: "Финансы", icon: <AccountBalanceWalletOutlined /> },
   { to: "/support", label: "Сообщения", icon: <ForumOutlined /> },
+  { to: "/engagement", label: "Опросы", icon: <PollOutlined /> },
+  { to: "/reputation", label: "Оценки", icon: <StarOutlined /> },
   { to: "/settings", label: "Настройки", icon: <SettingsOutlined /> },
 ];
 

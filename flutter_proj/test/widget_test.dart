@@ -6,6 +6,8 @@ import 'package:flutter_proj/core/auth/auth_session_store.dart';
 import 'package:flutter_proj/core/data/local_catalog.dart';
 import 'package:flutter_proj/core/driver_work/driver_work_api_client.dart';
 import 'package:flutter_proj/core/finance/driver_finance_api_client.dart';
+import 'package:flutter_proj/core/engagement/engagement_api_client.dart';
+import 'package:flutter_proj/core/engagement/engagement_store.dart';
 import 'package:flutter_proj/core/orders/order_api_client.dart';
 import 'package:flutter_proj/core/orders/order_store.dart';
 import 'package:flutter_proj/core/support/support_api_client.dart';
@@ -65,12 +67,18 @@ void main() {
     );
     final supportApi = SupportApiClient(baseUrl: 'http://localhost');
     final supportStore = SupportStore(api: supportApi, auth: authController);
+    final engagementApi = EngagementApiClient(baseUrl: 'http://localhost');
+    final engagementStore = EngagementStore(
+      api: engagementApi,
+      auth: authController,
+    );
     addTearDown(() {
       orderStore.dispose();
       orderApi.close();
       driverWorkApi.close();
       driverFinanceApi.close();
       supportApi.close();
+      engagementApi.close();
       authController.dispose();
       authApi.close();
     });
@@ -80,6 +88,7 @@ void main() {
         home: PassengerHomeScreen(
           orderStore: orderStore,
           supportStore: supportStore,
+          engagementStore: engagementStore,
         ),
       ),
     );
@@ -109,12 +118,18 @@ void main() {
     );
     final supportApi = SupportApiClient(baseUrl: 'http://localhost');
     final supportStore = SupportStore(api: supportApi, auth: authController);
+    final engagementApi = EngagementApiClient(baseUrl: 'http://localhost');
+    final engagementStore = EngagementStore(
+      api: engagementApi,
+      auth: authController,
+    );
     addTearDown(() {
       orderStore.dispose();
       orderApi.close();
       driverWorkApi.close();
       driverFinanceApi.close();
       supportApi.close();
+      engagementApi.close();
       authController.dispose();
       authApi.close();
     });
@@ -124,6 +139,7 @@ void main() {
         home: PassengerHomeScreen(
           orderStore: orderStore,
           supportStore: supportStore,
+          engagementStore: engagementStore,
         ),
       ),
     );

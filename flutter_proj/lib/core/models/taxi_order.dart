@@ -135,6 +135,9 @@ class TaxiOrder {
     this.passengerName,
     this.driverName,
     this.driverVehicle,
+    this.waitingStartedAt,
+    this.waitingCharge = 0,
+    this.cancellationReasonCode,
   });
 
   final String id;
@@ -157,6 +160,9 @@ class TaxiOrder {
   final String? passengerName;
   final String? driverName;
   final DriverVehicle? driverVehicle;
+  final DateTime? waitingStartedAt;
+  final int waitingCharge;
+  final String? cancellationReasonCode;
 
   factory TaxiOrder.fromJson(Map<String, dynamic> json) {
     final createdAt = DateTime.parse(json['createdAt'] as String).toLocal();
@@ -193,6 +199,11 @@ class TaxiOrder {
           (json['passenger'] as Map<String, dynamic>?)?['name'] as String?,
       driverName: driver?['name'] as String?,
       driverVehicle: vehicle == null ? null : DriverVehicle.fromJson(vehicle),
+      waitingStartedAt: json['waitingStartedAt'] == null
+          ? null
+          : DateTime.parse(json['waitingStartedAt'] as String).toLocal(),
+      waitingCharge: json['waitingChargeAmount'] as int? ?? 0,
+      cancellationReasonCode: json['cancellationReasonCode'] as String?,
     );
   }
 
@@ -238,6 +249,9 @@ class TaxiOrder {
     String? passengerName,
     String? driverName,
     DriverVehicle? driverVehicle,
+    DateTime? waitingStartedAt,
+    int? waitingCharge,
+    String? cancellationReasonCode,
   }) {
     return TaxiOrder(
       id: id,
@@ -260,6 +274,10 @@ class TaxiOrder {
       passengerName: passengerName ?? this.passengerName,
       driverName: driverName ?? this.driverName,
       driverVehicle: driverVehicle ?? this.driverVehicle,
+      waitingStartedAt: waitingStartedAt ?? this.waitingStartedAt,
+      waitingCharge: waitingCharge ?? this.waitingCharge,
+      cancellationReasonCode:
+          cancellationReasonCode ?? this.cancellationReasonCode,
     );
   }
 }

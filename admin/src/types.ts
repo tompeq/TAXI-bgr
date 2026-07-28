@@ -61,6 +61,7 @@ export interface TariffList {
 export interface ServiceSettings {
   acceptedOrderTimeoutSeconds: number;
   freeWaitingMinutes: number;
+  waitingBaseFee: number;
   waitingPricePerMinute: number;
   arrivalSoonMinutes: number;
   driverBoardAnnouncement: string;
@@ -199,4 +200,94 @@ export interface SupportConversation extends Omit<
 export interface ApiErrorBody {
   code?: string;
   message?: string | string[];
+}
+
+export type SurveyTargetRole = "passenger" | "driver" | "all";
+
+export interface SurveyTemplate {
+  id: string;
+  title: string;
+  question: string;
+  targetRole: SurveyTargetRole;
+  answerOptions: string[];
+  allowComment: boolean;
+  enabled: boolean;
+  startsAt: string | null;
+  displayTime: string | null;
+  frequencyDays: number | null;
+  everyCompletedTrips: number | null;
+  responseCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SurveyList {
+  items: SurveyTemplate[];
+}
+
+export interface SurveyResponseItem {
+  id: string;
+  answer: string | null;
+  comment: string | null;
+  createdAt: string;
+  user: {
+    id: string;
+    name: string;
+    phone: string;
+    role: "passenger" | "driver";
+  };
+}
+
+export interface SurveyResponseList {
+  survey: SurveyTemplate;
+  items: SurveyResponseItem[];
+}
+
+export interface UserAnnouncement {
+  id: string;
+  title: string;
+  body: string;
+  targetRole: SurveyTargetRole | null;
+  targetUserId: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AnnouncementList {
+  items: UserAnnouncement[];
+}
+
+export interface ReputationUser {
+  id: string;
+  name: string;
+  phone: string;
+  role: "passenger" | "driver";
+  averageRating: number;
+  ratingCount: number;
+  driverCancellationReasons: Array<{
+    reason: string;
+    count: number;
+  }>;
+}
+
+export interface ReputationList {
+  items: ReputationUser[];
+}
+
+export interface UserRatingDetails {
+  user: Pick<ReputationUser, "id" | "name" | "phone" | "role">;
+  items: Array<{
+    id: string;
+    orderId: string;
+    score: number;
+    comment: string | null;
+    createdAt: string;
+    author: {
+      id: string;
+      name: string;
+      phone: string;
+      role: "passenger" | "driver";
+    };
+  }>;
 }

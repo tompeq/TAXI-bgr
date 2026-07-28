@@ -21,6 +21,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { SurveysModule } from './modules/surveys/surveys.module';
 import { FinanceModule } from './modules/finance/finance.module';
 import { SupportModule } from './modules/support/support.module';
+import { EngagementModule } from './modules/engagement/engagement.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { SupportModule } from './modules/support/support.module';
     SurveysModule,
     FinanceModule,
     SupportModule,
+    EngagementModule,
     OrdersModule,
     TrackingModule,
     AuthModule,

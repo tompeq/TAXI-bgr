@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../core/finance/finance_models.dart';
+import '../../core/engagement/engagement_store.dart';
 import '../../core/models/address_point.dart';
 import '../../core/models/address_selection.dart';
 import '../../core/models/address_suggestion.dart';
@@ -22,11 +23,14 @@ import '../../core/tracking/tracking_client.dart';
 import '../../core/tracking/vehicle_location.dart';
 import '../map/taxi_map.dart';
 import '../support/support_chat_sheet.dart';
+import '../engagement/engagement_dialogs.dart';
+import '../engagement/order_chat_sheet.dart';
 
 class PassengerHomeScreen extends StatefulWidget {
   const PassengerHomeScreen({
     required this.orderStore,
     required this.supportStore,
+    required this.engagementStore,
     this.trackingClient,
     this.onSwitchToDriver,
     this.onLogout,
@@ -35,6 +39,7 @@ class PassengerHomeScreen extends StatefulWidget {
 
   final OrderStore orderStore;
   final SupportStore supportStore;
+  final EngagementStore engagementStore;
   final TrackingClient? trackingClient;
   final Future<void> Function()? onSwitchToDriver;
   final Future<void> Function()? onLogout;
@@ -92,6 +97,7 @@ class _PassengerHomeScreenState extends State<PassengerHomeScreen>
   bool _startingUserLocation = false;
   bool _focusUserWhenReady = false;
   bool _sheetRefreshScheduled = false;
+  bool _engagementDialogOpen = false;
 
   bool get _isPickingOnMap => _mapSelection != null;
 
@@ -157,6 +163,7 @@ class _PassengerHomeScreenState extends State<PassengerHomeScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         unawaited(_startUserLocation());
+        unawaited(_showPendingEngagement());
       }
     });
   }
@@ -186,8 +193,14 @@ class _PassengerHomeScreenState extends State<PassengerHomeScreen>
 
   void _onOrderStoreChanged() {
     final order = widget.orderStore.activePassengerOrder;
+    final completedOrClosed = order == null && _trackedOrderId != null;
     if (order?.id != _trackedOrderId) {
       unawaited(_syncTracking(order));
+    }
+    if (completedOrClosed) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_showPendingEngagement());
+      });
     }
     if (mounted) {
       setState(() {});
@@ -323,6 +336,9 @@ class _PassengerHomeScreenState extends State<PassengerHomeScreen>
                 order: activeOrder,
                 paymentDetails: widget.orderStore.passengerTransferDetails,
                 onCancel: _cancelPassengerOrder,
+                onChat: activeOrder.driverName == null
+                    ? null
+                    : () => _showOrderChat(activeOrder),
               ),
             )
           else
@@ -455,6 +471,31 @@ class _PassengerHomeScreenState extends State<PassengerHomeScreen>
       await onSwitchToDriver?.call();
     } else if (action == _PassengerAccountAction.logout) {
       await onLogout?.call();
+    }
+  }
+
+  void _showOrderChat(TaxiOrder order) {
+    final userId = widget.engagementStore.auth.session?.user.id;
+    if (userId == null) return;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (_) => OrderChatSheet(
+        store: widget.engagementStore,
+        orderId: order.id,
+        currentUserId: userId,
+      ),
+    );
+  }
+
+  Future<void> _showPendingEngagement() async {
+    if (!mounted || _engagementDialogOpen) return;
+    _engagementDialogOpen = true;
+    try {
+      await showPendingEngagementDialogs(context, widget.engagementStore);
+    } finally {
+      _engagementDialogOpen = false;
     }
   }
 
@@ -1131,11 +1172,13 @@ class _PassengerActiveOrderPanel extends StatelessWidget {
     required this.order,
     required this.paymentDetails,
     required this.onCancel,
+    required this.onChat,
   });
 
   final TaxiOrder order;
   final TransferPaymentDetails? paymentDetails;
   final VoidCallback onCancel;
+  final VoidCallback? onChat;
 
   @override
   Widget build(BuildContext context) {
@@ -1162,7 +1205,7 @@ class _PassengerActiveOrderPanel extends StatelessWidget {
       ),
       OrderStatus.waiting => (
         'Водитель ожидает',
-        'Бесплатное ожидание — 10 минут',
+        'Первые 10 минут — 50 ₽, затем 5 ₽/мин',
         Icons.timer_outlined,
       ),
       OrderStatus.started => (
@@ -1293,6 +1336,17 @@ class _PassengerActiveOrderPanel extends StatelessWidget {
               const SizedBox(height: 8),
               _ActiveAddressLine(icon: Icons.location_on, text: order.to.title),
               const SizedBox(height: 12),
+              if (onChat != null) ...[
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.tonalIcon(
+                    onPressed: onChat,
+                    icon: const Icon(Icons.chat_bubble_outline),
+                    label: const Text('Чат с водителем'),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(

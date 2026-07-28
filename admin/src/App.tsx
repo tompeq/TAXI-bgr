@@ -43,6 +43,16 @@ const SupportPage = lazy(() =>
     default: module.SupportPage,
   })),
 );
+const EngagementPage = lazy(() =>
+  import("./pages/EngagementPage").then((module) => ({
+    default: module.EngagementPage,
+  })),
+);
+const ReputationPage = lazy(() =>
+  import("./pages/ReputationPage").then((module) => ({
+    default: module.ReputationPage,
+  })),
+);
 
 function ProtectedRoutes() {
   const { session } = useAuth();
@@ -62,6 +72,8 @@ function App() {
             <Route path="tariffs" element={<TariffsPage />} />
             <Route path="finance" element={<FinancePage />} />
             <Route path="support" element={<SupportPage />} />
+            <Route path="engagement" element={<EngagementPage />} />
+            <Route path="reputation" element={<ReputationPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>
         </Route>

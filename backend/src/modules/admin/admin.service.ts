@@ -532,6 +532,7 @@ export class AdminService {
     return {
       acceptedOrderTimeoutSeconds: settings.acceptedOrderTimeoutSeconds,
       freeWaitingMinutes: settings.freeWaitingMinutes,
+      waitingBaseFee: settings.waitingBaseFee,
       waitingPricePerMinute: settings.waitingPricePerMinute,
       arrivalSoonMinutes: settings.arrivalSoonMinutes,
       driverBoardAnnouncement: settings.driverBoardAnnouncement,

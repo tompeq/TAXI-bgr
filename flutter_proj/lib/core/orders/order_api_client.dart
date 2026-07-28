@@ -11,9 +11,14 @@ import '../network/api_exception.dart';
 import 'driver_availability.dart';
 
 class DriverOrderBoard {
-  const DriverOrderBoard({required this.orders, required this.announcement});
+  const DriverOrderBoard({
+    required this.orders,
+    required this.reservations,
+    required this.announcement,
+  });
 
   final List<TaxiOrder> orders;
+  final List<TaxiOrder> reservations;
   final String announcement;
 }
 
@@ -63,8 +68,18 @@ class OrderApiClient {
       orders: (body['items'] as List<dynamic>)
           .map((item) => TaxiOrder.fromJson(item as Map<String, dynamic>))
           .toList(growable: false),
+      reservations: (body['reservations'] as List<dynamic>? ?? const [])
+          .map((item) => TaxiOrder.fromJson(item as Map<String, dynamic>))
+          .toList(growable: false),
       announcement: body['announcement'] as String? ?? '',
     );
+  }
+
+  Future<List<TaxiOrder>> getReservations(String accessToken) async {
+    final body = await _mapRequest('GET', '/orders/reservations', accessToken);
+    return (body['items'] as List<dynamic>)
+        .map((item) => TaxiOrder.fromJson(item as Map<String, dynamic>))
+        .toList(growable: false);
   }
 
   Future<TaxiOrder?> getActive(String accessToken) async {
@@ -113,13 +128,14 @@ class OrderApiClient {
   Future<TaxiOrder> cancelOrder(
     String accessToken,
     String orderId,
-    String reason,
-  ) async {
+    String reason, {
+    String? reasonCode,
+  }) async {
     final body = await _mapRequest(
       'POST',
       '/orders/$orderId/cancel',
       accessToken,
-      body: {'reason': reason},
+      body: {'reason': reason, 'reasonCode': reasonCode},
     );
     return TaxiOrder.fromJson(body);
   }

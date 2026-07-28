@@ -31,4 +31,16 @@ export class OrdersAutomationService {
       this.logger.error('Could not announce scheduled orders', error);
     }
   }
+
+  @Cron('*/30 * * * * *', { waitForCompletion: true })
+  async sendScheduledReminders(): Promise<void> {
+    try {
+      const sent = await this.orders.sendScheduledReminders();
+      if (sent > 0) {
+        this.logger.log(`Queued ${sent} scheduled order reminder(s)`);
+      }
+    } catch (error) {
+      this.logger.error('Could not process scheduled order reminders', error);
+    }
+  }
 }
