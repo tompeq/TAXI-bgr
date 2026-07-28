@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/engagement/engagement_models.dart';
 import '../../core/engagement/engagement_store.dart';
+import '../../core/utils/person_name.dart';
 
 Future<void> showPendingEngagementDialogs(
   BuildContext context,
@@ -185,8 +186,16 @@ class _RatingDialogState extends State<_RatingDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final targetName = personFirstName(
+      widget.rating.targetName,
+      familyNameFirst: widget.rating.targetRole == EngagementRole.driver,
+    );
+    final targetDescription =
+        widget.rating.targetRole == EngagementRole.passenger
+        ? 'пассажира $targetName'
+        : 'перевозчика $targetName';
     return AlertDialog(
-      title: Text('Оцените: ${widget.rating.targetName}'),
+      title: Text('Оценить $targetDescription'),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [

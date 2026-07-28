@@ -25,6 +25,9 @@ export class UserAnnouncementEntity {
   @Column({ name: 'target_user_id', type: 'uuid', nullable: true })
   targetUserId!: string | null;
 
+  @Column({ name: 'target_phone', type: 'varchar', length: 16, nullable: true })
+  targetPhone!: string | null;
+
   @Column({ type: 'boolean', default: true })
   enabled!: boolean;
 

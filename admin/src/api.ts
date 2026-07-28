@@ -275,6 +275,7 @@ export const adminApi = {
     body: string;
     targetRole: "passenger" | "driver" | "all" | null;
     targetUserId: string | null;
+    targetPhone: string | null;
     enabled: boolean;
   }) =>
     apiRequest<UserAnnouncement>("/admin/announcements", {
@@ -286,7 +287,12 @@ export const adminApi = {
     announcement: Partial<
       Pick<
         UserAnnouncement,
-        "title" | "body" | "targetRole" | "targetUserId" | "enabled"
+        | "title"
+        | "body"
+        | "targetRole"
+        | "targetUserId"
+        | "targetPhone"
+        | "enabled"
       >
     >,
   ) =>

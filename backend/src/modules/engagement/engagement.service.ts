@@ -284,6 +284,7 @@ export class EngagementService {
     if (![UserRole.Passenger, UserRole.Driver].includes(currentUser.role)) {
       throw this.mobileRoleRequired();
     }
+    const currentPhone = await this.userPhone(currentUser.userId);
     const rows = await this.announcements
       .createQueryBuilder('announcement')
       .where('announcement.enabled = true')
@@ -292,6 +293,9 @@ export class EngagementService {
           query
             .where('announcement.targetUserId = :userId', {
               userId: currentUser.userId,
+            })
+            .orWhere('announcement.targetPhone = :phone', {
+              phone: currentPhone,
             })
             .orWhere('announcement.targetRole = :role', {
               role: currentUser.role,
@@ -335,8 +339,10 @@ export class EngagementService {
       currentUser.role === UserRole.Driver
         ? SurveyTargetRole.Driver
         : SurveyTargetRole.Passenger;
+    const currentPhone = await this.userPhone(currentUser.userId);
     const matchesTarget =
       announcement.targetUserId === currentUser.userId ||
+      announcement.targetPhone === currentPhone ||
       announcement.targetRole === targetRole ||
       announcement.targetRole === SurveyTargetRole.All;
     if (!matchesTarget) {
@@ -446,17 +452,46 @@ export class EngagementService {
     input: CreateAnnouncementDto,
     admin: AuthenticatedUser,
   ) {
-    this.assertAnnouncementTarget(input.targetRole, input.targetUserId);
+    const targetPhone = input.targetPhone?.trim()
+      ? this.normalizeAnnouncementPhone(input.targetPhone)
+      : null;
+    this.assertAnnouncementTarget(
+      input.targetRole,
+      input.targetUserId,
+      targetPhone,
+    );
+    const targetUsers = targetPhone
+      ? await this.dataSource
+          .getRepository(UserEntity)
+          .find({ where: { phone: targetPhone } })
+      : [];
+    if (targetPhone && targetUsers.length === 0) {
+      throw new NotFoundException({
+        code: 'ANNOUNCEMENT_PHONE_NOT_FOUND',
+        message: 'No registered user has this phone number',
+      });
+    }
     const saved = await this.announcements.save(
       this.announcements.create({
         title: input.title.trim(),
         body: input.body.trim(),
         targetRole: input.targetRole ?? null,
         targetUserId: input.targetUserId ?? null,
+        targetPhone,
         enabled: input.enabled ?? true,
         createdByUserId: admin.userId,
       }),
     );
+    if (saved.enabled && targetUsers.length > 0) {
+      await this.notifications.sendToUsers(
+        targetUsers.map((user) => user.id),
+        {
+          title: saved.title,
+          body: saved.body,
+          data: { type: 'announcement', announcementId: saved.id },
+        },
+      );
+    }
     return this.announcementResponse(saved);
   }
 
@@ -476,12 +511,30 @@ export class EngagementService {
       input.targetUserId === undefined
         ? announcement.targetUserId
         : input.targetUserId;
-    this.assertAnnouncementTarget(targetRole, targetUserId);
+    const targetPhone =
+      input.targetPhone === undefined
+        ? announcement.targetPhone
+        : input.targetPhone?.trim()
+          ? this.normalizeAnnouncementPhone(input.targetPhone)
+          : null;
+    this.assertAnnouncementTarget(targetRole, targetUserId, targetPhone);
+    if (targetPhone) {
+      const matchingUsers = await this.dataSource
+        .getRepository(UserEntity)
+        .countBy({ phone: targetPhone });
+      if (matchingUsers === 0) {
+        throw new NotFoundException({
+          code: 'ANNOUNCEMENT_PHONE_NOT_FOUND',
+          message: 'No registered user has this phone number',
+        });
+      }
+    }
     if (input.title !== undefined) announcement.title = input.title.trim();
     if (input.body !== undefined) announcement.body = input.body.trim();
     if (input.enabled !== undefined) announcement.enabled = input.enabled;
     announcement.targetRole = targetRole;
     announcement.targetUserId = targetUserId;
+    announcement.targetPhone = targetPhone;
     return this.announcementResponse(
       await this.announcements.save(announcement),
     );
@@ -750,6 +803,7 @@ export class EngagementService {
       body: announcement.body,
       targetRole: announcement.targetRole,
       targetUserId: announcement.targetUserId,
+      targetPhone: announcement.targetPhone,
       enabled: announcement.enabled,
       createdAt: announcement.createdAt,
       updatedAt: announcement.updatedAt,
@@ -759,13 +813,48 @@ export class EngagementService {
   private assertAnnouncementTarget(
     targetRole?: SurveyTargetRole | null,
     targetUserId?: string | null,
+    targetPhone?: string | null,
   ): void {
-    if (!targetRole && !targetUserId) {
+    const targetCount = [targetRole, targetUserId, targetPhone].filter(
+      (value) => value != null,
+    ).length;
+    if (targetCount !== 1) {
       throw new BadRequestException({
         code: 'ANNOUNCEMENT_TARGET_REQUIRED',
-        message: 'A role or a specific user is required',
+        message: 'Exactly one announcement target is required',
       });
     }
+  }
+
+  private normalizeAnnouncementPhone(value: string): string {
+    const raw = value.trim();
+    let digits = raw.replace(/\D/g, '');
+    if (digits.length === 10) {
+      digits = `7${digits}`;
+    } else if (digits.length === 11 && digits.startsWith('8')) {
+      digits = `7${digits.slice(1)}`;
+    }
+    const normalized = `+${digits}`;
+    if (!/^\+[1-9][0-9]{7,14}$/.test(normalized)) {
+      throw new BadRequestException({
+        code: 'ANNOUNCEMENT_PHONE_INVALID',
+        message: 'Phone must use a valid international format',
+      });
+    }
+    return normalized;
+  }
+
+  private async userPhone(userId: string): Promise<string> {
+    const user = await this.dataSource
+      .getRepository(UserEntity)
+      .findOne({ where: { id: userId }, select: { phone: true } });
+    if (!user) {
+      throw new NotFoundException({
+        code: 'USER_NOT_FOUND',
+        message: 'User was not found',
+      });
+    }
+    return user.phone;
   }
 
   private surveyNotFound(): NotFoundException {

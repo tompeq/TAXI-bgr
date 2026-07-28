@@ -31,7 +31,7 @@ import {
 } from "@mui/material";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { adminApi } from "../api";
+import { adminApi, ApiError } from "../api";
 import type {
   SurveyTargetRole,
   SurveyTemplate,
@@ -42,6 +42,8 @@ type SurveyDraft = Omit<
   SurveyTemplate,
   "id" | "responseCount" | "createdAt" | "updatedAt" | "version"
 >;
+
+type AnnouncementAudience = SurveyTargetRole | "specific";
 
 const emptySurvey: SurveyDraft = {
   title: "",
@@ -413,26 +415,27 @@ function AnnouncementsSection() {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [targetRole, setTargetRole] = useState<SurveyTargetRole>("all");
-  const [targetUserId, setTargetUserId] = useState<string>("");
-  const reputationQuery = useQuery({
-    queryKey: ["reputation", "announcement-targets"],
-    queryFn: adminApi.reputation,
-  });
+  const [audience, setAudience] = useState<AnnouncementAudience>("all");
+  const [targetPhone, setTargetPhone] = useState("+7");
+  const normalizedTargetPhone = normalizeAnnouncementPhone(targetPhone);
+  const targetsSpecificUser = audience === "specific";
   const create = useMutation({
     mutationFn: () =>
       adminApi.createAnnouncement({
         title,
         body,
-        targetRole: targetUserId ? null : targetRole,
-        targetUserId: targetUserId || null,
+        targetRole: audience === "specific" ? null : audience,
+        targetUserId: null,
+        targetPhone:
+          audience === "specific" ? normalizedTargetPhone : null,
         enabled: true,
       }),
     onSuccess: async () => {
       setOpen(false);
       setTitle("");
       setBody("");
-      setTargetUserId("");
+      setAudience("all");
+      setTargetPhone("+7");
       await queryClient.invalidateQueries({ queryKey: ["announcements"] });
     },
   });
@@ -455,7 +458,10 @@ function AnnouncementsSection() {
         <Button
           variant="contained"
           startIcon={<AddOutlined />}
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            create.reset();
+            setOpen(true);
+          }}
         >
           Новое сообщение
         </Button>
@@ -482,7 +488,9 @@ function AnnouncementsSection() {
                   </Typography>
                 </TableCell>
                 <TableCell>
-                  {item.targetUserId
+                  {item.targetPhone
+                    ? `Номер ${item.targetPhone}`
+                    : item.targetUserId
                     ? `Пользователь ${item.targetUserId}`
                     : targetLabel(item.targetRole ?? "all")}
                 </TableCell>
@@ -502,7 +510,15 @@ function AnnouncementsSection() {
           </TableBody>
         </Table>
       </TableContainer>
-      <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm">
+      <Dialog
+        open={open}
+        onClose={() => {
+          create.reset();
+          setOpen(false);
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
         <DialogTitle>Одноразовое сообщение</DialogTitle>
         <DialogContent dividers>
           <Box sx={{ display: "grid", gap: 2 }}>
@@ -522,53 +538,87 @@ function AnnouncementsSection() {
               <InputLabel>Для кого</InputLabel>
               <Select
                 label="Для кого"
-                value={targetRole}
+                value={audience}
                 onChange={(event) =>
-                  setTargetRole(event.target.value as SurveyTargetRole)
+                  setAudience(event.target.value as AnnouncementAudience)
                 }
               >
                 <MenuItem value="all">Все</MenuItem>
                 <MenuItem value="driver">Водители</MenuItem>
                 <MenuItem value="passenger">Пассажиры</MenuItem>
+                <MenuItem value="specific">Конкретный пользователь</MenuItem>
               </Select>
             </FormControl>
-            <FormControl>
-              <InputLabel>Конкретный пользователь</InputLabel>
-              <Select
-                label="Конкретный пользователь"
-                value={targetUserId}
-                onChange={(event) => setTargetUserId(event.target.value)}
-              >
-                <MenuItem value="">Не выбран</MenuItem>
-                {(reputationQuery.data?.items ?? []).map((user) => (
-                  <MenuItem key={user.id} value={user.id}>
-                    {user.name} · {user.phone} ·{" "}
-                    {user.role === "driver" ? "водитель" : "пассажир"}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            {targetUserId && (
-              <Typography variant="caption" color="text.secondary">
-                Сообщение увидит только выбранный пользователь. Выбор роли выше
-                будет проигнорирован.
-              </Typography>
+            {targetsSpecificUser && (
+              <TextField
+                label="Номер телефона"
+                type="tel"
+                value={targetPhone}
+                onChange={(event) => setTargetPhone(event.target.value)}
+                placeholder="+7 914 000-00-00"
+                error={
+                  targetPhone.replace(/\D/g, "").length >= 10 &&
+                  !normalizedTargetPhone
+                }
+                helperText="Сообщение получат все аккаунты с этим номером"
+                autoFocus
+              />
+            )}
+            {create.error && (
+              <Alert severity="error">
+                {announcementErrorMessage(create.error)}
+              </Alert>
             )}
           </Box>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpen(false)}>Отмена</Button>
+          <Button
+            onClick={() => {
+              create.reset();
+              setOpen(false);
+            }}
+          >
+            Отмена
+          </Button>
           <Button
             variant="contained"
-            disabled={title.trim().length < 2 || body.trim().length < 2}
+            disabled={
+              create.isPending ||
+              title.trim().length < 2 ||
+              body.trim().length < 2 ||
+              (targetsSpecificUser && !normalizedTargetPhone)
+            }
             onClick={() => create.mutate()}
           >
-            Создать
+            {create.isPending ? "Отправляем..." : "Создать"}
           </Button>
         </DialogActions>
       </Dialog>
     </Box>
   );
+}
+
+function normalizeAnnouncementPhone(value: string): string | null {
+  let digits = value.replace(/\D/g, "");
+  if (digits.length === 10) {
+    digits = `7${digits}`;
+  } else if (digits.length === 11 && digits.startsWith("8")) {
+    digits = `7${digits.slice(1)}`;
+  }
+  const normalized = `+${digits}`;
+  return /^\+[1-9][0-9]{7,14}$/.test(normalized) ? normalized : null;
+}
+
+function announcementErrorMessage(error: Error): string {
+  if (error instanceof ApiError) {
+    if (error.code === "ANNOUNCEMENT_PHONE_NOT_FOUND") {
+      return "Пользователь с таким номером не зарегистрирован";
+    }
+    if (error.code === "ANNOUNCEMENT_PHONE_INVALID") {
+      return "Проверьте номер телефона";
+    }
+  }
+  return error.message || "Не удалось отправить сообщение";
 }
 
 function surveyToDraft(survey: SurveyTemplate): SurveyDraft {

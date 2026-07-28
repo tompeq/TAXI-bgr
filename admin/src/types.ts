@@ -249,6 +249,7 @@ export interface UserAnnouncement {
   body: string;
   targetRole: SurveyTargetRole | null;
   targetUserId: string | null;
+  targetPhone: string | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;

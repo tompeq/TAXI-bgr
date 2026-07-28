@@ -21,6 +21,7 @@ import '../../core/services/tariff_calculator.dart';
 import '../../core/tracking/device_location_service.dart';
 import '../../core/tracking/tracking_client.dart';
 import '../../core/tracking/vehicle_location.dart';
+import '../../core/utils/person_name.dart';
 import '../map/taxi_map.dart';
 import '../support/support_chat_sheet.dart';
 import '../engagement/engagement_dialogs.dart';
@@ -1290,7 +1291,10 @@ class _PassengerActiveOrderPanel extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              order.driverName!,
+                              personFirstName(
+                                order.driverName!,
+                                familyNameFirst: true,
+                              ),
                               style: const TextStyle(
                                 fontWeight: FontWeight.w800,
                               ),
@@ -1372,7 +1376,8 @@ class _PassengerActiveOrderPanel extends StatelessWidget {
                   )
                 else ...[
                   Text(
-                    '${paymentDetails!.driverName} · ${paymentDetails!.transferBank}',
+                    '${personFirstName(paymentDetails!.driverName, familyNameFirst: true)} · '
+                    '${paymentDetails!.transferBank}',
                     style: const TextStyle(color: Color(0xFF666666)),
                   ),
                   const SizedBox(height: 8),

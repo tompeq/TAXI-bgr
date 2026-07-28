@@ -241,18 +241,7 @@ export class OrdersService {
       .skip((query.page - 1) * query.pageSize)
       .take(query.pageSize)
       .getManyAndCount();
-    const reservations = await this.orders.find({
-      where: {
-        driverUserId: driver.userId,
-        status: OrderStatus.Accepted,
-        scheduledFor: LessThanOrEqual(
-          new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        ),
-      },
-      relations: { passenger: true, driver: { driverProfile: true } },
-      order: { scheduledFor: 'ASC' },
-      take: 20,
-    });
+    const reservations = await this.findDriverReservations(driver.userId);
     return {
       items: orders.map((order) => this.toResponse(order)),
       page: query.page,
@@ -260,11 +249,7 @@ export class OrdersService {
       total,
       visibilityDelaySeconds: boardAccess.visibilityDelaySeconds,
       announcement: settings.driverBoardAnnouncement,
-      reservations: reservations
-        .filter(
-          (order) => order.scheduledFor && order.scheduledFor > new Date(),
-        )
-        .map((order) => this.toResponse(order)),
+      reservations: reservations.map((order) => this.toResponse(order)),
     };
   }
 
@@ -318,7 +303,16 @@ export class OrdersService {
               );
           }),
         )
-        .orderBy('order.scheduledFor', 'ASC', 'NULLS FIRST')
+        .addSelect(
+          `CASE
+            WHEN order.status IN ('driver_en_route', 'arrived', 'waiting', 'started')
+              THEN 0
+            ELSE 1
+          END`,
+          'active_order_priority',
+        )
+        .orderBy('active_order_priority', 'ASC')
+        .addOrderBy('order.scheduledFor', 'ASC', 'NULLS FIRST')
         .addOrderBy('order.createdAt', 'DESC')
         .getOne();
     } else {
@@ -329,20 +323,7 @@ export class OrdersService {
 
   async listDriverReservations(driver: AuthenticatedUser) {
     await this.driverWork.assertApprovedDriver(driver);
-    const now = new Date();
-    const orders = await this.orders
-      .createQueryBuilder('order')
-      .leftJoinAndSelect('order.passenger', 'passenger')
-      .leftJoinAndSelect('order.driver', 'driver')
-      .leftJoinAndSelect('driver.driverProfile', 'driverProfile')
-      .where('order.driverUserId = :driverUserId', {
-        driverUserId: driver.userId,
-      })
-      .andWhere('order.status = :status', { status: OrderStatus.Accepted })
-      .andWhere('order.scheduledFor > :now', { now })
-      .orderBy('order.scheduledFor', 'ASC')
-      .take(20)
-      .getMany();
+    const orders = await this.findDriverReservations(driver.userId);
     return { items: orders.map((order) => this.toResponse(order)) };
   }
 
@@ -408,49 +389,10 @@ export class OrdersService {
             message: 'Order has already been accepted or closed',
           });
         }
-        const active = await repository
-          .createQueryBuilder('active')
-          .where('active.driverUserId = :driverUserId', {
-            driverUserId: driver.userId,
-          })
-          .andWhere(
-            new Brackets((query) => {
-              query
-                .where('active.status IN (:...drivingStatuses)', {
-                  drivingStatuses: DRIVING_ORDER_STATUSES,
-                })
-                .orWhere(
-                  `(
-                    active.status = :acceptedStatus
-                    AND (
-                      active.scheduledFor IS NULL
-                      OR active.scheduledFor <= :blockBefore
-                    )
-                  )`,
-                  {
-                    acceptedStatus: OrderStatus.Accepted,
-                    blockBefore,
-                  },
-                );
-            }),
-          )
-          .getOne();
-        const canReserveDuringActive =
-          order.scheduledFor !== null &&
-          order.scheduledFor >
-            new Date(
-              now.getTime() + SCHEDULED_RESERVATION_CONFLICT_MINUTES * 60_000,
-            );
-        if (active && !canReserveDuringActive) {
-          throw new ConflictException({
-            code: 'DRIVER_ALREADY_HAS_ACTIVE_ORDER',
-            message: 'Driver already has an active order',
-          });
-        }
         const visibleAt = new Date(
           order.createdAt.getTime() + visibilityDelaySeconds * 1000,
         );
-        if (visibleAt > new Date()) {
+        if (visibleAt > now) {
           throw new ConflictException({
             code: 'ORDER_NOT_YET_VISIBLE',
             message: 'This order is not available to this driver yet',
@@ -460,6 +402,70 @@ export class OrdersService {
           throw new ConflictException({
             code: 'ORDER_KIND_DISABLED',
             message: 'This order kind is disabled in driver settings',
+          });
+        }
+        const drivingOrder = await repository
+          .createQueryBuilder('active')
+          .setLock('pessimistic_write')
+          .where('active.driverUserId = :driverUserId', {
+            driverUserId: driver.userId,
+          })
+          .andWhere('active.status IN (:...drivingStatuses)', {
+            drivingStatuses: DRIVING_ORDER_STATUSES,
+          })
+          .getOne();
+        const blockingAcceptedOrder = await repository
+          .createQueryBuilder('reserved')
+          .setLock('pessimistic_write')
+          .where('reserved.driverUserId = :driverUserId', {
+            driverUserId: driver.userId,
+          })
+          .andWhere('reserved.status = :acceptedStatus', {
+            acceptedStatus: OrderStatus.Accepted,
+          })
+          .andWhere(
+            new Brackets((query) => {
+              query
+                .where('reserved.scheduledFor IS NULL')
+                .orWhere('reserved.scheduledFor <= :blockBefore', {
+                  blockBefore,
+                });
+            }),
+          )
+          .getOne();
+        const hasActiveOrder =
+          drivingOrder !== null || blockingAcceptedOrder !== null;
+        const canReserveScheduledDuringActive =
+          order.scheduledFor !== null &&
+          order.scheduledFor >
+            new Date(
+              now.getTime() + SCHEDULED_RESERVATION_CONFLICT_MINUTES * 60_000,
+            );
+        if (hasActiveOrder && order.scheduledFor === null) {
+          if (!drivingOrder) {
+            throw new ConflictException({
+              code: 'DRIVER_ALREADY_HAS_ACTIVE_ORDER',
+              message:
+                'Сначала начните выполнение принятого заказа, затем можно выбрать следующий.',
+            });
+          }
+          if (blockingAcceptedOrder) {
+            throw new ConflictException({
+              code: 'DRIVER_NEXT_ORDER_ALREADY_RESERVED',
+              message: 'Следующий заказ уже выбран.',
+            });
+          }
+          await this.assertNearestNextOrder(
+            repository,
+            order,
+            drivingOrder,
+            acceptedKinds,
+            new Date(now.getTime() - visibilityDelaySeconds * 1000),
+          );
+        } else if (hasActiveOrder && !canReserveScheduledDuringActive) {
+          throw new ConflictException({
+            code: 'DRIVER_ALREADY_HAS_ACTIVE_ORDER',
+            message: 'Driver already has an active order',
           });
         }
         if (order.scheduledFor) {
@@ -959,6 +965,90 @@ export class OrdersService {
       },
       manager,
     );
+  }
+
+  private async findDriverReservations(
+    driverUserId: string,
+  ): Promise<OrderEntity[]> {
+    const now = new Date();
+    return this.orders
+      .createQueryBuilder('reservation')
+      .leftJoinAndSelect('reservation.passenger', 'passenger')
+      .leftJoinAndSelect('reservation.driver', 'driver')
+      .leftJoinAndSelect('driver.driverProfile', 'driverProfile')
+      .where('reservation.driverUserId = :driverUserId', { driverUserId })
+      .andWhere('reservation.status = :status', {
+        status: OrderStatus.Accepted,
+      })
+      .andWhere(
+        new Brackets((query) => {
+          query.where('reservation.scheduledFor > :now', { now }).orWhere(
+            `(
+                reservation.scheduledFor IS NULL
+                AND EXISTS (
+                  SELECT 1
+                  FROM orders driving
+                  WHERE driving.driver_user_id = :driverUserId
+                    AND driving.status IN (
+                      'driver_en_route',
+                      'arrived',
+                      'waiting',
+                      'started'
+                    )
+                )
+              )`,
+          );
+        }),
+      )
+      .addSelect(
+        'CASE WHEN reservation.scheduledFor IS NULL THEN 0 ELSE 1 END',
+        'reservation_priority',
+      )
+      .orderBy('reservation_priority', 'ASC')
+      .addOrderBy('reservation.scheduledFor', 'ASC', 'NULLS FIRST')
+      .addOrderBy('reservation.createdAt', 'ASC')
+      .take(20)
+      .getMany();
+  }
+
+  private async assertNearestNextOrder(
+    repository: Repository<OrderEntity>,
+    selectedOrder: OrderEntity,
+    activeOrder: OrderEntity,
+    acceptedKinds: OrderKind[],
+    visibleBefore: Date,
+  ): Promise<void> {
+    const candidates = await repository
+      .createQueryBuilder('candidate')
+      .where('candidate.status = :status', { status: OrderStatus.Open })
+      .andWhere('candidate.scheduledFor IS NULL')
+      .andWhere('candidate.kind IN (:...acceptedKinds)', { acceptedKinds })
+      .andWhere('candidate.createdAt <= :visibleBefore', { visibleBefore })
+      .orderBy('candidate.createdAt', 'DESC')
+      .getMany();
+    const destination = activeOrder.destinationPoint.coordinates;
+    let nearest: OrderEntity | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of candidates) {
+      const pickup = candidate.pickupPoint.coordinates;
+      const distance = this.distanceMeters(
+        destination[1],
+        destination[0],
+        pickup[1],
+        pickup[0],
+      );
+      if (distance < nearestDistance) {
+        nearest = candidate;
+        nearestDistance = distance;
+      }
+    }
+    if (nearest?.id !== selectedOrder.id) {
+      throw new ConflictException({
+        code: 'ORDER_NOT_NEAREST',
+        message:
+          'Этот заказ уже не ближайший. Обновите доску и выберите отмеченный заказ.',
+      });
+    }
   }
 
   private toResponse(order: OrderEntity) {

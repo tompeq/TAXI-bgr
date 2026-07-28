@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/engagement/engagement_models.dart';
 import '../../core/engagement/engagement_store.dart';
+import '../../core/utils/person_name.dart';
 
 class OrderChatSheet extends StatefulWidget {
   const OrderChatSheet({
@@ -115,7 +116,12 @@ class _OrderChatSheetState extends State<OrderChatSheet> {
                               children: [
                                 if (!own)
                                   Text(
-                                    message.sender.name,
+                                    personFirstName(
+                                      message.sender.name,
+                                      familyNameFirst:
+                                          message.sender.role ==
+                                          EngagementRole.driver,
+                                    ),
                                     style: const TextStyle(
                                       fontSize: 12,
                                       fontWeight: FontWeight.w800,

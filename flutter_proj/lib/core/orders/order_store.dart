@@ -434,7 +434,20 @@ class OrderStore extends ChangeNotifier {
       if (order == null) {
         throw const ApiException(message: 'Заказ уже недоступен');
       }
-      _activeDriverOrder = order.copyWith(status: OrderStatus.accepted);
+      final accepted = order.copyWith(status: OrderStatus.accepted);
+      if (_activeDriverOrder != null &&
+          _isDrivingStatus(_activeDriverOrder!.status) &&
+          !accepted.scheduled) {
+        if (_scheduledDriverOrders.any((item) => !item.scheduled)) {
+          throw const ApiException(message: 'Следующий заказ уже выбран');
+        }
+        _scheduledDriverOrders = [
+          ..._scheduledDriverOrders.where((item) => item.id != accepted.id),
+          accepted,
+        ]..sort(_compareReservations);
+      } else {
+        _activeDriverOrder = accepted;
+      }
       _openOrders = _openOrders
           .where((item) => item.id != orderId)
           .toList(growable: false);
@@ -449,11 +462,15 @@ class OrderStore extends ChangeNotifier {
           accepted.scheduled &&
           accepted.tripTime.difference(DateTime.now()) >
               const Duration(minutes: 5);
-      if (futureReservation) {
+      final nextOrderReservation =
+          _activeDriverOrder != null &&
+          _isDrivingStatus(_activeDriverOrder!.status) &&
+          !accepted.scheduled;
+      if (futureReservation || nextOrderReservation) {
         _scheduledDriverOrders = [
           ..._scheduledDriverOrders.where((item) => item.id != accepted.id),
           accepted,
-        ]..sort((a, b) => a.tripTime.compareTo(b.tripTime));
+        ]..sort(_compareReservations);
       } else {
         _activeDriverOrder = accepted;
       }
@@ -473,6 +490,15 @@ class OrderStore extends ChangeNotifier {
           ? null
           : active.copyWith(status: status);
       if (status == OrderStatus.completed) {
+        final nextOrder = _scheduledDriverOrders
+            .where((order) => !order.scheduled)
+            .firstOrNull;
+        if (nextOrder != null) {
+          _activeDriverOrder = nextOrder;
+          _scheduledDriverOrders = _scheduledDriverOrders
+              .where((order) => order.id != nextOrder.id)
+              .toList(growable: false);
+        }
         _driverWorkState = _localWorkState(DriverLineStatus.online);
         _openOrders = _localOrders();
       }
@@ -484,12 +510,9 @@ class OrderStore extends ChangeNotifier {
         (token) => api.updateStatus(token, active.id, status),
       );
       if (status == OrderStatus.completed) {
-        _activeDriverOrder = null;
         _driverWorkState = await auth.authorizedRequest(driverWorkApi.getState);
+        _activeDriverOrder = await auth.authorizedRequest(api.getActive);
         _openOrders = await _loadBoardFromServer();
-        _scheduledDriverOrders = await auth.authorizedRequest(
-          api.getReservations,
-        );
       } else {
         _activeDriverOrder = updated;
       }
@@ -512,7 +535,7 @@ class OrderStore extends ChangeNotifier {
         (token) =>
             api.cancelOrder(token, active.id, reason, reasonCode: reasonCode),
       );
-      _activeDriverOrder = null;
+      _activeDriverOrder = await auth.authorizedRequest(api.getActive);
       _openOrders = await _loadBoardFromServer();
     });
   }
@@ -572,6 +595,20 @@ class OrderStore extends ChangeNotifier {
     _boardAnnouncement = board.announcement;
     _scheduledDriverOrders = board.reservations;
     return board.orders;
+  }
+
+  static bool _isDrivingStatus(OrderStatus status) {
+    return status == OrderStatus.driverEnRoute ||
+        status == OrderStatus.arrived ||
+        status == OrderStatus.waiting ||
+        status == OrderStatus.started;
+  }
+
+  static int _compareReservations(TaxiOrder first, TaxiOrder second) {
+    if (first.scheduled != second.scheduled) {
+      return first.scheduled ? 1 : -1;
+    }
+    return first.tripTime.compareTo(second.tripTime);
   }
 
   Future<T> _run<T>(

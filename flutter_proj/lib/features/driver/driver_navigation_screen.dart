@@ -187,6 +187,9 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
                   alignment: Alignment.bottomCenter,
                   child: _ActiveOrderPanel(
                     order: activeOrder,
+                    nextOrder: store.scheduledDriverOrders
+                        .where((order) => !order.scheduled)
+                        .firstOrNull,
                     routePreview: _routePreview,
                     loading: store.loading,
                     onPrimaryAction: () => _advanceOrder(activeOrder),
@@ -580,7 +583,12 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
 
   void _showUpcomingOrders(TaxiOrder activeOrder) {
     final orders = widget.orderStore.openOrders;
-    final nearestId = _nearestOrderId(activeOrder, orders);
+    final nextOrderAlreadyReserved = widget.orderStore.scheduledDriverOrders
+        .any((order) => !order.scheduled);
+    final canReserveNext = _canReserveNextOrder(activeOrder.status);
+    final nearestId = canReserveNext && !nextOrderAlreadyReserved
+        ? _nearestOrderId(activeOrder, orders)
+        : null;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -596,8 +604,15 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
                 style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 6),
-              const Text(
-                'Значком отмечен заказ с ближайшей точкой подачи.',
+              Text(
+                nextOrderAlreadyReserved
+                    ? 'Один следующий заказ уже выбран. После завершения '
+                          'текущей поездки он откроется автоматически.'
+                    : canReserveNext
+                    ? 'Значком отмечен единственный заказ, который можно '
+                          'взять следующим.'
+                    : 'Следующий заказ можно выбрать после начала выполнения '
+                          'текущего.',
                 style: TextStyle(color: Color(0xFF666666)),
               ),
               const SizedBox(height: 12),
@@ -609,9 +624,10 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
                     compact: _compactBoard,
                     nearest: order.id == nearestId,
                     onAccept:
-                        order.scheduled &&
-                            order.tripTime.difference(DateTime.now()) >
-                                const Duration(minutes: 30)
+                        (order.scheduled &&
+                                order.tripTime.difference(DateTime.now()) >
+                                    const Duration(minutes: 30)) ||
+                            (!order.scheduled && order.id == nearestId)
                         ? () {
                             Navigator.of(context).pop();
                             unawaited(_acceptOrder(order.id));
@@ -631,6 +647,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
     String? nearestId;
     var nearestDistance = double.infinity;
     for (final order in orders) {
+      if (order.scheduled) continue;
       final distance = _distanceMeters(
         activeOrder.to.coordinates,
         order.from.coordinates,
@@ -641,6 +658,13 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
       }
     }
     return nearestId;
+  }
+
+  bool _canReserveNextOrder(OrderStatus status) {
+    return status == OrderStatus.driverEnRoute ||
+        status == OrderStatus.arrived ||
+        status == OrderStatus.waiting ||
+        status == OrderStatus.started;
   }
 
   double _distanceMeters(GeoPoint from, GeoPoint to) {
@@ -1359,6 +1383,7 @@ class _ReservationSummary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final first = orders.first;
+    final queuedNext = !first.scheduled;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
       decoration: BoxDecoration(
@@ -1375,14 +1400,20 @@ class _ReservationSummary extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  orders.length == 1
+                  queuedNext
+                      ? orders.length == 1
+                            ? 'Следующий заказ выбран'
+                            : 'Следующий заказ выбран · ещё ${orders.length - 1}'
+                      : orders.length == 1
                       ? 'Заказ на время'
                       : 'Заказов на время: ${orders.length}',
                   style: const TextStyle(fontWeight: FontWeight.w800),
                 ),
                 Text(
-                  '${_formatScheduledOrderTime(first.tripTime)} · '
-                  '${first.from.title}',
+                  queuedNext
+                      ? '${first.from.title} → ${first.to.title}'
+                      : '${_formatScheduledOrderTime(first.tripTime)} · '
+                            '${first.from.title}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 12),
@@ -1434,6 +1465,7 @@ class _AddressRow extends StatelessWidget {
 class _ActiveOrderPanel extends StatelessWidget {
   const _ActiveOrderPanel({
     required this.order,
+    required this.nextOrder,
     required this.routePreview,
     required this.loading,
     required this.onPrimaryAction,
@@ -1444,6 +1476,7 @@ class _ActiveOrderPanel extends StatelessWidget {
   });
 
   final TaxiOrder order;
+  final TaxiOrder? nextOrder;
   final RoutePreview routePreview;
   final bool loading;
   final VoidCallback onPrimaryAction;
@@ -1524,6 +1557,35 @@ class _ActiveOrderPanel extends StatelessWidget {
                     'Ожидание: ${order.waitingCharge} ₽. '
                     'Первые 10 минут стоят 50 ₽, затем 5 ₽/мин.',
                     style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (nextOrder != null) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 9,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEAF4FF),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.next_plan_outlined, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Следующий: ${nextOrder!.from.title} → '
+                          '${nextOrder!.to.title}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 8),

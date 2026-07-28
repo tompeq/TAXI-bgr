@@ -26,6 +26,11 @@ export class CreateAnnouncementDto {
   targetUserId?: string | null;
 
   @IsOptional()
+  @IsString()
+  @Length(10, 24)
+  targetPhone?: string | null;
+
+  @IsOptional()
   @IsBoolean()
   enabled?: boolean;
 }
