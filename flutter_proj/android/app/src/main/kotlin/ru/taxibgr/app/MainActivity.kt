@@ -1,6 +1,8 @@
 package ru.taxibgr.app
 
 import android.content.ActivityNotFoundException
+import android.app.DownloadManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -15,6 +17,11 @@ import java.security.MessageDigest
 class MainActivity : FlutterActivity() {
     companion object {
         private const val UPDATE_CHANNEL = "ru.taxibgr.app/app_update"
+        private const val UPDATE_PREFERENCES = "app_update_download"
+        private const val DOWNLOAD_ID = "download_id"
+        private const val DOWNLOAD_URL = "download_url"
+        private const val DOWNLOAD_VERSION = "download_version"
+        private const val DOWNLOAD_PATH = "download_path"
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -30,6 +37,22 @@ class MainActivity : FlutterActivity() {
                         val fileName = call.argument<String>("fileName")
                             ?: throw IllegalArgumentException("fileName is required")
                         result.success(prepareDownload(fileName).absolutePath)
+                    }
+                    "startUpdateDownload" -> {
+                        val url = call.argument<String>("url")
+                            ?: throw IllegalArgumentException("url is required")
+                        val fileName = call.argument<String>("fileName")
+                            ?: throw IllegalArgumentException("fileName is required")
+                        val versionCode = call.argument<Number>("versionCode")?.toLong()
+                            ?: throw IllegalArgumentException("versionCode is required")
+                        result.success(startUpdateDownload(url, fileName, versionCode))
+                    }
+                    "getUpdateDownload" -> {
+                        result.success(getUpdateDownload())
+                    }
+                    "discardUpdateDownload" -> {
+                        discardUpdateDownload()
+                        result.success(null)
                     }
                     "sha256" -> {
                         val path = call.argument<String>("path")
@@ -98,10 +121,134 @@ class MainActivity : FlutterActivity() {
             "Cannot create updates directory"
         }
         return File(directory, fileName).apply {
-            if (exists() && !delete()) {
-                throw IllegalStateException("Cannot replace previous update")
+            require(canonicalPath.startsWith(directory.canonicalPath)) {
+                "Update file is outside the updates directory"
             }
         }
+    }
+
+    private fun startUpdateDownload(
+        rawUrl: String,
+        rawFileName: String,
+        versionCode: Long,
+    ): Map<String, Any?> {
+        val uri = Uri.parse(rawUrl)
+        require(uri.scheme == "http" || uri.scheme == "https") {
+            "Update URL must use HTTP or HTTPS"
+        }
+        require(versionCode > 0) { "versionCode must be positive" }
+
+        val file = prepareDownload(rawFileName)
+        val preferences = getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+        val existingId = preferences.getLong(DOWNLOAD_ID, -1L)
+        val existingUrl = preferences.getString(DOWNLOAD_URL, null)
+        val existingVersion = preferences.getLong(DOWNLOAD_VERSION, -1L)
+        if (existingId >= 0 && existingUrl == rawUrl && existingVersion == versionCode) {
+            val existing = queryDownload(existingId, file)
+            if (existing != null && existing["status"] != "failed") {
+                return existing
+            }
+        }
+
+        if (existingId >= 0) {
+            downloadManager().remove(existingId)
+        }
+        if (file.exists() && !file.delete()) {
+            throw IllegalStateException("Cannot remove previous update")
+        }
+
+        val request = DownloadManager.Request(uri)
+            .setTitle("Такси Бгр")
+            .setDescription("Загрузка обновления")
+            .setMimeType("application/vnd.android.package-archive")
+            .setAllowedOverMetered(true)
+            .setAllowedOverRoaming(false)
+            .setNotificationVisibility(
+                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
+            )
+            .setDestinationUri(Uri.fromFile(file))
+
+        val downloadId = downloadManager().enqueue(request)
+        preferences.edit()
+            .putLong(DOWNLOAD_ID, downloadId)
+            .putString(DOWNLOAD_URL, rawUrl)
+            .putLong(DOWNLOAD_VERSION, versionCode)
+            .putString(DOWNLOAD_PATH, file.absolutePath)
+            .apply()
+
+        return queryDownload(downloadId, file)
+            ?: mapOf(
+                "status" to "pending",
+                "downloadedBytes" to 0L,
+                "totalBytes" to -1L,
+                "path" to file.absolutePath,
+            )
+    }
+
+    private fun getUpdateDownload(): Map<String, Any?> {
+        val preferences = getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+        val downloadId = preferences.getLong(DOWNLOAD_ID, -1L)
+        val path = preferences.getString(DOWNLOAD_PATH, null)
+        if (downloadId < 0 || path.isNullOrBlank()) {
+            return mapOf("status" to "missing")
+        }
+        return queryDownload(downloadId, File(path))
+            ?: mapOf("status" to "missing")
+    }
+
+    private fun queryDownload(downloadId: Long, file: File): Map<String, Any?>? {
+        val query = DownloadManager.Query().setFilterById(downloadId)
+        downloadManager().query(query)?.use { cursor ->
+            if (!cursor.moveToFirst()) {
+                return null
+            }
+            val status = cursor.getInt(
+                cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS),
+            )
+            val downloadedBytes = cursor.getLong(
+                cursor.getColumnIndexOrThrow(
+                    DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR,
+                ),
+            )
+            val totalBytes = cursor.getLong(
+                cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES),
+            )
+            val reason = cursor.getInt(
+                cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON),
+            )
+            return mapOf(
+                "status" to when (status) {
+                    DownloadManager.STATUS_PENDING -> "pending"
+                    DownloadManager.STATUS_RUNNING -> "running"
+                    DownloadManager.STATUS_PAUSED -> "paused"
+                    DownloadManager.STATUS_SUCCESSFUL -> "successful"
+                    DownloadManager.STATUS_FAILED -> "failed"
+                    else -> "missing"
+                },
+                "downloadedBytes" to downloadedBytes,
+                "totalBytes" to totalBytes,
+                "reason" to reason,
+                "path" to file.absolutePath,
+            )
+        }
+        return null
+    }
+
+    private fun discardUpdateDownload() {
+        val preferences = getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE)
+        val downloadId = preferences.getLong(DOWNLOAD_ID, -1L)
+        val path = preferences.getString(DOWNLOAD_PATH, null)
+        if (downloadId >= 0) {
+            downloadManager().remove(downloadId)
+        }
+        if (!path.isNullOrBlank()) {
+            File(path).delete()
+        }
+        preferences.edit().clear().apply()
+    }
+
+    private fun downloadManager(): DownloadManager {
+        return getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
     }
 
     private fun approvedUpdateFile(rawPath: String): File {

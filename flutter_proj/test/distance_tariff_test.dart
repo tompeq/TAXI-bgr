@@ -16,8 +16,14 @@ void main() {
 
     expect(lowerHarbor.coordinates.latitude, 52.43778);
     expect(lowerHarbor.coordinates.longitude, 140.42528);
-    expect(quarry.coordinates.latitude, 52.39279);
-    expect(quarry.coordinates.longitude, 140.43950);
+    expect(quarry.coordinates.latitude, 52.43720);
+    expect(quarry.coordinates.longitude, 140.45700);
+    expect(quarry.title, 'Карьер');
+    expect(
+      mapLandmarks.map((landmark) => landmark.id),
+      orderedEquals(['lower-harbor', 'quarry']),
+    );
+    expect(ServiceZoneResolver.resolve(quarry.coordinates), ServiceZone.quarry);
   });
 
   test('uses the per-kilometer fallback outside fixed zones', () {

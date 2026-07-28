@@ -42,11 +42,9 @@ class AppUpdateController extends ChangeNotifier {
       }
       _update = available;
       _stage = AppUpdateStage.available;
-      _visible = true;
+      _visible = false;
       notifyListeners();
-      if (available.required) {
-        unawaited(download());
-      }
+      unawaited(download());
     } on Object {
       // Update checks are optional and must not affect app startup.
     }
@@ -60,7 +58,7 @@ class AppUpdateController extends ChangeNotifier {
     _stage = AppUpdateStage.downloading;
     _error = null;
     _progress = 0;
-    _visible = true;
+    _visible = false;
     notifyListeners();
     try {
       final path = await service.download(available, onProgress: _setProgress);

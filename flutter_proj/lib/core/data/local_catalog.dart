@@ -40,10 +40,10 @@ const localAddressCatalog = <AddressPoint>[
   ),
   AddressPoint(
     id: 'quarry',
-    title: 'Карьер под Гавань',
+    title: 'Карьер',
     subtitle: 'фиксированная зона',
     zone: ServiceZone.quarry,
-    coordinates: GeoPoint(latitude: 52.39279, longitude: 140.43950),
+    coordinates: GeoPoint(latitude: 52.43720, longitude: 140.45700),
   ),
 ];
 
@@ -57,10 +57,10 @@ const mapLandmarks = <AddressPoint>[
   ),
   AddressPoint(
     id: 'quarry',
-    title: 'Карьер под Гавань',
+    title: 'Карьер',
     subtitle: 'фиксированная зона',
     zone: ServiceZone.quarry,
-    coordinates: GeoPoint(latitude: 52.39279, longitude: 140.43950),
+    coordinates: GeoPoint(latitude: 52.43720, longitude: 140.45700),
   ),
 ];
 

@@ -6,24 +6,18 @@ import 'package:flutter_proj/core/update/app_update_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('downloads without blocking the app and returns when ready', () async {
+  test('downloads automatically without blocking the app', () async {
     final service = _FakeUpdateService();
     final controller = AppUpdateController(service: service);
 
     await controller.check();
-    expect(controller.stage, AppUpdateStage.available);
-    expect(controller.visible, isTrue);
-
-    final download = controller.download();
     await Future<void>.delayed(Duration.zero);
     expect(controller.stage, AppUpdateStage.downloading);
     expect(controller.progress, 0.25);
-
-    controller.dismiss();
     expect(controller.visible, isFalse);
 
     service.downloadCompleter.complete('/updates/taxi-bgr.apk');
-    await download;
+    await Future<void>.delayed(Duration.zero);
     expect(controller.stage, AppUpdateStage.ready);
     expect(controller.visible, isTrue);
     expect(controller.hasDownloadedPackage, isTrue);

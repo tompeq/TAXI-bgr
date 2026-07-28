@@ -54,7 +54,7 @@ export class AddDistanceTariffsAndCorrectLandmarks1783929600000 implements Migra
           )
           WHEN 'quarry' THEN ST_Multi(
             ST_Buffer(
-              ST_SetSRID(ST_MakePoint(140.43950, 52.39279), 4326)::geography,
+              ST_SetSRID(ST_MakePoint(140.45700, 52.43720), 4326)::geography,
               1200
             )::geometry
           )

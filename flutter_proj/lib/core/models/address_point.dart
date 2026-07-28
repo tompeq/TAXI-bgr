@@ -8,7 +8,7 @@ extension ServiceZoneText on ServiceZone {
       ServiceZone.upperBgr => 'Верхний БГР',
       ServiceZone.kombinat => 'Комбинат',
       ServiceZone.lowerHarbor => 'Нижняя Гавань',
-      ServiceZone.quarry => 'Карьер под Гавань',
+      ServiceZone.quarry => 'Карьер',
       ServiceZone.custom => 'По километражу',
     };
   }

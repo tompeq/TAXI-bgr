@@ -31,7 +31,7 @@ const zoneLabels: Record<ServiceZone, string> = {
   upper_bgr: "Верхний БГР",
   kombinat: "Комбинат",
   lower_harbor: "Нижняя Гавань",
-  quarry: "Карьер под Гавань",
+  quarry: "Карьер",
   custom: "По километражу",
 };
 
