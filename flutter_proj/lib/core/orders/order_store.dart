@@ -9,6 +9,7 @@ import '../models/taxi_order.dart';
 import '../network/api_exception.dart';
 import '../data/local_catalog.dart';
 import '../services/tariff_calculator.dart';
+import '../tracking/vehicle_location.dart';
 import 'driver_availability.dart';
 import 'order_api_client.dart';
 import 'order_quote.dart';
@@ -480,7 +481,10 @@ class OrderStore extends ChangeNotifier {
     });
   }
 
-  Future<void> updateActiveStatus(OrderStatus status) async {
+  Future<void> updateActiveStatus(
+    OrderStatus status, {
+    VehicleLocation? completionLocation,
+  }) async {
     final active = _activeDriverOrder;
     if (active == null) {
       return;
@@ -507,7 +511,12 @@ class OrderStore extends ChangeNotifier {
     }
     await _run(() async {
       final updated = await auth.authorizedRequest(
-        (token) => api.updateStatus(token, active.id, status),
+        (token) => api.updateStatus(
+          token,
+          active.id,
+          status,
+          completionLocation: completionLocation,
+        ),
       );
       if (status == OrderStatus.completed) {
         _driverWorkState = await auth.authorizedRequest(driverWorkApi.getState);

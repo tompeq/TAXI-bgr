@@ -527,6 +527,12 @@ export class OrdersService {
     orderId: string,
     nextStatus: OrderStatus,
     driver: AuthenticatedUser,
+    completionLocation?: {
+      latitude: number;
+      longitude: number;
+      accuracyMeters: number;
+      recordedAt: string;
+    },
   ): Promise<ReturnType<OrdersService['toResponse']>> {
     await this.driverWork.assertApprovedDriver(driver);
     const settings =
@@ -571,7 +577,11 @@ export class OrdersService {
       }
 
       if (nextStatus === OrderStatus.Completed) {
-        await this.assertDriverNearCompletionPoint(order, driver.userId);
+        await this.assertDriverNearCompletionPoint(
+          order,
+          driver.userId,
+          completionLocation,
+        );
       }
 
       const previousStatus = order.status;
@@ -1115,32 +1125,37 @@ export class OrdersService {
   private async assertDriverNearCompletionPoint(
     order: OrderEntity,
     driverUserId: string,
+    completionLocation?: {
+      latitude: number;
+      longitude: number;
+      accuracyMeters: number;
+      recordedAt: string;
+    },
   ): Promise<void> {
-    const raw = await this.redis.connection.get(
-      `tracking:order:${order.id}:driver`,
-    );
-    if (!raw) {
-      throw new ConflictException({
-        code: 'ORDER_COMPLETION_LOCATION_REQUIRED',
-        message:
-          'Не удалось получить свежую геопозицию. Включите точную геолокацию и повторите попытку.',
-      });
-    }
-
     let snapshot: {
       driverUserId?: string;
       latitude: number;
       longitude: number;
+      accuracyMeters?: number;
       recordedAt?: string;
     };
-    try {
-      snapshot = JSON.parse(raw) as typeof snapshot;
-    } catch {
-      throw new ConflictException({
-        code: 'ORDER_COMPLETION_LOCATION_REQUIRED',
-        message:
-          'Не удалось проверить геопозицию. Обновите местоположение и повторите попытку.',
-      });
+    if (completionLocation) {
+      snapshot = {
+        driverUserId,
+        ...completionLocation,
+      };
+    } else {
+      const raw = await this.redis.connection.get(
+        `tracking:order:${order.id}:driver`,
+      );
+      if (!raw) {
+        throw this.completionLocationRequired();
+      }
+      try {
+        snapshot = JSON.parse(raw) as typeof snapshot;
+      } catch {
+        throw this.completionLocationRequired();
+      }
     }
 
     const recordedAtMs = snapshot.recordedAt
@@ -1154,11 +1169,7 @@ export class OrdersService {
       Date.now() - recordedAtMs > 45_000 ||
       recordedAtMs - Date.now() > 10_000
     ) {
-      throw new ConflictException({
-        code: 'ORDER_COMPLETION_LOCATION_REQUIRED',
-        message:
-          'Не удалось проверить геопозицию. Обновите местоположение и повторите попытку.',
-      });
+      throw this.completionLocationRequired();
     }
 
     const destination = order.destinationPoint;
@@ -1172,17 +1183,32 @@ export class OrdersService {
       'ORDER_COMPLETION_RADIUS_METERS',
       300,
     );
-    if (distanceMeters > radiusMeters) {
+    const accuracyAllowanceMeters = Math.min(
+      Math.max(snapshot.accuracyMeters ?? 0, 0),
+      50,
+    );
+    const effectiveRadiusMeters = radiusMeters + accuracyAllowanceMeters;
+    if (distanceMeters > effectiveRadiusMeters) {
       throw new ConflictException({
         code: 'ORDER_COMPLETION_TOO_FAR',
-        message: `До конечной точки ещё ${Math.round(distanceMeters)} м. Завершить поездку можно в радиусе ${radiusMeters} м.`,
+        message: `До конечной точки ещё ${Math.round(distanceMeters)} м. Завершить поездку можно в радиусе ${Math.round(effectiveRadiusMeters)} м.`,
         details: {
           driverUserId,
           distanceMeters: Math.round(distanceMeters),
           allowedRadiusMeters: radiusMeters,
+          locationAccuracyMeters: Math.round(snapshot.accuracyMeters ?? 0),
+          effectiveRadiusMeters: Math.round(effectiveRadiusMeters),
         },
       });
     }
+  }
+
+  private completionLocationRequired(): ConflictException {
+    return new ConflictException({
+      code: 'ORDER_COMPLETION_LOCATION_REQUIRED',
+      message:
+        'Не удалось получить свежую геопозицию. Включите точную геолокацию и повторите попытку.',
+    });
   }
 
   private distanceMeters(

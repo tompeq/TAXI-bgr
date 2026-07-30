@@ -63,6 +63,12 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
   yandex.MapObjectCollection? _routeObjects;
   yandex.MapObjectCollection? _vehicleObjects;
   yandex.PlacemarkMapObject? _vehiclePlacemark;
+  yandex.Polyline? _activeRouteGeometry;
+  yandex.PolylineIndex? _activeRouteIndex;
+  yandex.Point? _displayVehiclePoint;
+  double? _displayVehicleHeading;
+  yandex.Point? _lastCameraTarget;
+  double? _lastCameraAzimuth;
   yandex.UserLocationLayer? _userLocationLayer;
   directions.DrivingRouter? _drivingRouter;
   directions.DrivingSession? _drivingSession;
@@ -108,6 +114,7 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
     final endpointsChanged =
         !_samePoint(oldWidget.from, widget.from) ||
         !_samePoint(oldWidget.to, widget.to);
+    final destinationChanged = !_samePoint(oldWidget.to, widget.to);
     final hasCompleteRoute = widget.from != null && widget.to != null;
     final vehicleChanged = !_sameGeoPoint(
       oldWidget.vehiclePosition,
@@ -119,14 +126,19 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
         oldWidget.userLocationFocusRequest != widget.userLocationFocusRequest;
 
     if (endpointsChanged || routeRefreshRequested) {
-      _syncRoute();
+      _syncRoute(
+        preserveExisting:
+            widget.navigationMode && !destinationChanged && _routeVisible,
+      );
     }
     if (vehicleChanged || oldWidget.vehicleHeading != widget.vehicleHeading) {
       _syncVehicleMarker();
     }
-    if ((vehicleChanged && widget.navigationMode) ||
-        oldWidget.vehicleFocusRequest != widget.vehicleFocusRequest) {
+    if (vehicleChanged && widget.navigationMode) {
       _followVehicle();
+    }
+    if (oldWidget.vehicleFocusRequest != widget.vehicleFocusRequest) {
+      _followVehicle(force: true);
     }
     if (userLocationVisibilityChanged) {
       _syncUserLocationLayer();
@@ -286,6 +298,12 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
     _routeObjects = map.mapObjects.addCollection();
     _vehicleObjects = map.mapObjects.addCollection();
     _vehiclePlacemark = null;
+    _activeRouteGeometry = null;
+    _activeRouteIndex = null;
+    _displayVehiclePoint = null;
+    _displayVehicleHeading = null;
+    _lastCameraTarget = null;
+    _lastCameraAzimuth = null;
     _routeVisible = false;
     _syncLandmarks();
     _updateFocusPoint();
@@ -347,7 +365,7 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
     }
   }
 
-  void _syncRoute() {
+  void _syncRoute({bool preserveExisting = false}) {
     final from = widget.from;
     final to = widget.to;
     if (from == null || to == null) {
@@ -362,9 +380,14 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
     }
 
     _cancelRouteRequest();
-    _clearRouteOverlay();
+    final keepCurrentRoute = preserveExisting && _routeVisible;
+    if (!keepCurrentRoute) {
+      _clearRouteOverlay();
+    }
     final request = ++_routeRequest;
-    _notifyRoute(const RoutePreview.loading());
+    if (!keepCurrentRoute) {
+      _notifyRoute(const RoutePreview.loading());
+    }
 
     final listener = directions.DrivingSessionRouteListener(
       onDrivingRoutes: (routes) {
@@ -372,7 +395,7 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
           return;
         }
         if (routes.isEmpty) {
-          _handleRouteUnavailable();
+          _handleRouteUnavailable(keepExisting: keepCurrentRoute);
           return;
         }
         _showRoute(routes.first);
@@ -381,7 +404,7 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
         if (!mounted || request != _routeRequest) {
           return;
         }
-        _handleRouteUnavailable();
+        _handleRouteUnavailable(keepExisting: keepCurrentRoute);
       },
     );
     _routeListener = listener;
@@ -425,6 +448,14 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
 
     final routeObjects = _routeObjects ??= map.mapObjects.addCollection();
     routeObjects.clear();
+    _activeRouteGeometry = route.geometry;
+    try {
+      _activeRouteIndex = yandex.PolylineUtils.createPolylineIndex(
+        route.geometry,
+      );
+    } on Object {
+      _activeRouteIndex = null;
+    }
     final polyline = routeObjects.addPolylineWithGeometry(route.geometry)
       ..style = const yandex.LineStyle(
         strokeWidth: 6,
@@ -449,6 +480,7 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
     } else {
       _routeVisible = true;
     }
+    _syncVehicleMarker();
     if (widget.navigationMode && widget.vehiclePosition != null) {
       _followVehicle();
     } else {
@@ -493,18 +525,23 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
     if (position == null) {
       collection.clear();
       _vehiclePlacemark = null;
+      _displayVehiclePoint = null;
+      _displayVehicleHeading = null;
       return;
     }
 
+    final pose = _vehiclePose(position);
+    _displayVehiclePoint = pose.point;
+    _displayVehicleHeading = pose.heading;
     final existing = _vehiclePlacemark;
     if (existing != null) {
-      existing.geometry = _point(position);
-      existing.direction = widget.vehicleHeading;
+      existing.geometry = pose.point;
+      existing.direction = pose.heading;
       return;
     }
 
     final placemark = collection.addPlacemarkWithView(
-      _point(position),
+      pose.point,
       yandex_view.ViewProvider(
         id: 'taxi-bgr-driver-marker',
         cacheable: true,
@@ -513,31 +550,85 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
     );
     placemark
       ..zIndex = 50
-      ..direction = widget.vehicleHeading;
+      ..direction = pose.heading;
     _vehiclePlacemark = placemark;
   }
 
-  void _followVehicle() {
+  ({yandex.Point point, double heading}) _vehiclePose(GeoPoint position) {
+    final rawPoint = _point(position);
+    final geometry = _activeRouteGeometry;
+    final index = _activeRouteIndex;
+    if (!widget.navigationMode || geometry == null || index == null) {
+      return (point: rawPoint, heading: widget.vehicleHeading);
+    }
+
+    try {
+      final routePosition = index.closestPolylinePositionWithPriority(
+        rawPoint,
+        yandex.PolylineIndexPriority.ClosestToRawPoint,
+        maxLocationBias: 65,
+      );
+      if (routePosition == null) {
+        return (point: rawPoint, heading: widget.vehicleHeading);
+      }
+      final snappedPoint = yandex.PolylineUtils.pointByPolylinePosition(
+        geometry,
+        routePosition,
+      );
+      final aheadPosition = yandex.PolylineUtils.advancePolylinePosition(
+        geometry,
+        routePosition,
+        distance: 12,
+      );
+      final aheadPoint = yandex.PolylineUtils.pointByPolylinePosition(
+        geometry,
+        aheadPosition,
+      );
+      final heading = yandex.Geo.distance(snappedPoint, aheadPoint) >= 1
+          ? yandex.Geo.course(snappedPoint, aheadPoint)
+          : widget.vehicleHeading;
+      return (point: snappedPoint, heading: heading);
+    } on Object {
+      return (point: rawPoint, heading: widget.vehicleHeading);
+    }
+  }
+
+  void _followVehicle({bool force = false}) {
     final window = _mapWindow;
     final position = widget.vehiclePosition;
     if (window == null || position == null) {
       return;
     }
+    final target = _displayVehiclePoint ?? _vehiclePose(position).point;
+    final heading = _displayVehicleHeading ?? widget.vehicleHeading;
+    final previousTarget = _lastCameraTarget;
+    final previousAzimuth = _lastCameraAzimuth;
+    if (!force &&
+        previousTarget != null &&
+        previousAzimuth != null &&
+        yandex.Geo.distance(previousTarget, target) < 1.5 &&
+        _headingDifference(previousAzimuth, heading) < 3) {
+      return;
+    }
+    _lastCameraTarget = target;
+    _lastCameraAzimuth = heading;
     final current = window.map.cameraPosition;
     window.map.move(
       yandex.CameraPosition(
-        _point(position),
+        target,
         zoom: current.zoom < 17 ? 17.5 : current.zoom,
-        azimuth: widget.vehicleHeading > 0
-            ? widget.vehicleHeading
-            : current.azimuth,
+        azimuth: heading > 0 ? heading : current.azimuth,
         tilt: widget.navigationMode ? 48 : current.tilt,
       ),
       animation: const yandex.Animation(
         type: yandex.AnimationType.Smooth,
-        duration: 0.45,
+        duration: 0.7,
       ),
     );
+  }
+
+  double _headingDifference(double first, double second) {
+    return (((second - first + 540) % 360) - 180).abs();
   }
 
   void _followUserLocation() {
@@ -594,8 +685,11 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
     );
   }
 
-  void _handleRouteUnavailable() {
+  void _handleRouteUnavailable({bool keepExisting = false}) {
     _cancelRouteRequest();
+    if (keepExisting && _routeVisible) {
+      return;
+    }
     _clearRouteOverlay();
     _notifyRoute(const RoutePreview.unavailable());
   }
@@ -616,6 +710,11 @@ class _TaxiMapState extends State<TaxiMap> with WidgetsBindingObserver {
 
   void _clearRouteOverlay() {
     _routeObjects?.clear();
+    _activeRouteGeometry = null;
+    _activeRouteIndex = null;
+    if (widget.vehiclePosition != null) {
+      _syncVehicleMarker();
+    }
     if (!_routeVisible) {
       return;
     }

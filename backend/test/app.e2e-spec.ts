@@ -963,17 +963,19 @@ describe('API (e2e)', () => {
             'ORDER_COMPLETION_TOO_FAR',
           );
         });
-      await setDriverTrackingLocation(
-        redis,
-        order.id,
-        approvedDriverSession.user.id,
-        52.3585,
-        140.4217,
-      );
+      await redis.connection.del(`tracking:order:${order.id}:driver`);
       await request(app.getHttpServer())
         .patch(`/api/v1/orders/${order.id}/status`)
         .set('Authorization', authorization.driver)
-        .send({ status: 'completed' })
+        .send({
+          status: 'completed',
+          completionLocation: {
+            latitude: 52.3585,
+            longitude: 140.4217,
+            accuracyMeters: 12,
+            recordedAt: new Date().toISOString(),
+          },
+        })
         .expect(200);
       await request(app.getHttpServer())
         .post(`/api/v1/orders/${order.id}/messages`)
@@ -1007,6 +1009,19 @@ describe('API (e2e)', () => {
         .set('Authorization', authorization.driver)
         .send({ score: 2, comment: 'Долго не выходил' })
         .expect(201);
+      for (const token of [authorization.passenger, authorization.driver]) {
+        await request(app.getHttpServer())
+          .get('/api/v1/engagement/ratings/pending')
+          .set('Authorization', token)
+          .expect(200)
+          .expect(({ body }) => {
+            expect(
+              (body as { items: Array<{ orderId: string }> }).items.map(
+                (item) => item.orderId,
+              ),
+            ).not.toContain(order.id);
+          });
+      }
       await request(app.getHttpServer())
         .post(`/api/v1/orders/${order.id}/rating`)
         .set('Authorization', authorization.passenger)

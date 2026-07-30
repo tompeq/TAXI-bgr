@@ -136,6 +136,11 @@ class EngagementInbox {
   final List<EngagementSurvey> surveys;
   final List<PendingRating> ratings;
 
+  Iterable<PendingRating> ratingsForOrder(String? orderId) {
+    if (orderId == null) return ratings;
+    return ratings.where((rating) => rating.orderId == orderId);
+  }
+
   bool get isEmpty =>
       announcements.isEmpty && surveys.isEmpty && ratings.isEmpty;
 }

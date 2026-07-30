@@ -104,7 +104,12 @@ export class OrdersController {
     @Body() input: UpdateOrderStatusDto,
     @CurrentUser() driver: AuthenticatedUser,
   ) {
-    return this.orders.updateStatus(orderId, input.status, driver);
+    return this.orders.updateStatus(
+      orderId,
+      input.status,
+      driver,
+      input.completionLocation,
+    );
   }
 
   @Post(':orderId/cancel')

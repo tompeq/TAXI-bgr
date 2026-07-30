@@ -6,8 +6,9 @@ import '../../core/utils/person_name.dart';
 
 Future<void> showPendingEngagementDialogs(
   BuildContext context,
-  EngagementStore store,
-) async {
+  EngagementStore store, {
+  String? ratingOrderId,
+}) async {
   EngagementInbox inbox;
   try {
     inbox = await store.loadInbox();
@@ -51,7 +52,8 @@ Future<void> showPendingEngagementDialogs(
     if (!context.mounted) return;
   }
 
-  for (final rating in inbox.ratings.take(1)) {
+  final ratings = inbox.ratingsForOrder(ratingOrderId);
+  for (final rating in ratings.take(1)) {
     final response = await showDialog<_RatingDialogResult>(
       context: context,
       builder: (_) => _RatingDialog(rating: rating),

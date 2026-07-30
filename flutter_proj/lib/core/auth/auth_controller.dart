@@ -13,6 +13,7 @@ class AuthController extends ChangeNotifier {
   final AuthSessionStore store;
 
   final Map<AppRole, AuthSession> _sessions = {};
+  final Map<AppRole, Future<AuthSession>> _refreshes = {};
   AppRole? _activeRole;
   bool _initialized = false;
 
@@ -79,8 +80,7 @@ class AuthController extends ChangeNotifier {
       if (!error.isUnauthorized) {
         rethrow;
       }
-      final refreshed = await api.refresh(current.refreshToken);
-      await acceptSession(refreshed);
+      final refreshed = await _refreshSession(current);
       return refreshed.user;
     }
   }
@@ -100,14 +100,16 @@ class AuthController extends ChangeNotifier {
       }
     }
 
+    late final AuthSession refreshed;
     try {
-      final refreshed = await api.refresh(current.refreshToken);
-      await acceptSession(refreshed);
-      return request(refreshed.accessToken);
-    } on Object {
-      await _discardSessionFor(current.user.role);
+      refreshed = await _refreshSession(current);
+    } on ApiException catch (error) {
+      if (error.isUnauthorized) {
+        await _discardSessionIfCurrent(current);
+      }
       rethrow;
     }
+    return request(refreshed.accessToken);
   }
 
   Future<void> logout() async {
@@ -142,6 +144,64 @@ class AuthController extends ChangeNotifier {
       await _persistSessions();
     }
     notifyListeners();
+  }
+
+  Future<void> _discardSessionIfCurrent(AuthSession expected) async {
+    final role = expected.user.role;
+    if (role == null ||
+        _sessions[role]?.refreshToken != expected.refreshToken) {
+      return;
+    }
+    await _discardSessionFor(role);
+  }
+
+  Future<AuthSession> _refreshSession(AuthSession expired) async {
+    final role = expired.user.role;
+    if (role == null) {
+      throw const ApiException(message: 'Неподдерживаемая роль аккаунта');
+    }
+
+    final running = _refreshes[role];
+    if (running != null) {
+      return running;
+    }
+
+    final latest = _sessions[role];
+    if (latest == null) {
+      throw const ApiException(message: 'Сессия не найдена');
+    }
+    if (latest.refreshToken != expired.refreshToken) {
+      return latest;
+    }
+
+    final refresh = _refreshAndPersist(expired, role);
+    _refreshes[role] = refresh;
+    try {
+      return await refresh;
+    } finally {
+      if (identical(_refreshes[role], refresh)) {
+        _refreshes.remove(role);
+      }
+    }
+  }
+
+  Future<AuthSession> _refreshAndPersist(
+    AuthSession expired,
+    AppRole role,
+  ) async {
+    final refreshed = await api.refresh(expired.refreshToken);
+    final latest = _sessions[role];
+    if (latest == null) {
+      throw const ApiException(message: 'Сессия не найдена');
+    }
+    if (latest.refreshToken != expired.refreshToken) {
+      return latest;
+    }
+
+    _sessions[role] = refreshed;
+    await _persistSessions();
+    notifyListeners();
+    return refreshed;
   }
 
   Future<void> _persistSessions() {

@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import '../finance/finance_models.dart';
 import '../models/taxi_order.dart';
+import '../tracking/vehicle_location.dart';
 import 'order_quote.dart';
 import '../network/api_exception.dart';
 import 'driver_availability.dart';
@@ -114,13 +115,25 @@ class OrderApiClient {
   Future<TaxiOrder> updateStatus(
     String accessToken,
     String orderId,
-    OrderStatus status,
-  ) async {
+    OrderStatus status, {
+    VehicleLocation? completionLocation,
+  }) async {
     final body = await _mapRequest(
       'PATCH',
       '/orders/$orderId/status',
       accessToken,
-      body: {'status': status.wireName},
+      body: {
+        'status': status.wireName,
+        if (completionLocation != null)
+          'completionLocation': {
+            'latitude': completionLocation.point.latitude,
+            'longitude': completionLocation.point.longitude,
+            'accuracyMeters': completionLocation.accuracyMeters,
+            'recordedAt': completionLocation.recordedAt
+                .toUtc()
+                .toIso8601String(),
+          },
+      },
     );
     return TaxiOrder.fromJson(body);
   }

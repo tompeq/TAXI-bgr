@@ -24,6 +24,23 @@ class DeviceLocationService {
 
   Future<bool> openLocationSettings() => Geolocator.openLocationSettings();
 
+  Future<VehicleLocation> current() async {
+    await _ensureAvailable();
+    final settings = Platform.isAndroid
+        ? AndroidSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+            timeLimit: const Duration(seconds: 10),
+          )
+        : const LocationSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+            timeLimit: Duration(seconds: 10),
+          );
+    final position = await Geolocator.getCurrentPosition(
+      locationSettings: settings,
+    );
+    return _toVehicleLocation(position);
+  }
+
   /// A lightweight stream for showing the person's position on the map.
   /// It deliberately does not start a foreground service or show a persistent
   /// notification.
@@ -64,6 +81,13 @@ class DeviceLocationService {
   }
 
   Future<Stream<VehicleLocation>> _watch(LocationSettings settings) async {
+    await _ensureAvailable();
+    return Geolocator.getPositionStream(
+      locationSettings: settings,
+    ).map(_toVehicleLocation);
+  }
+
+  Future<void> _ensureAvailable() async {
     var permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
@@ -82,20 +106,20 @@ class DeviceLocationService {
         locationServiceDisabled: true,
       );
     }
+  }
 
-    return Geolocator.getPositionStream(locationSettings: settings).map(
-      (position) => VehicleLocation(
-        point: GeoPoint(
-          latitude: position.latitude,
-          longitude: position.longitude,
-        ),
-        heading: position.heading.isFinite ? position.heading : 0,
-        speedMps: position.speed.isFinite && position.speed > 0
-            ? position.speed
-            : 0,
-        accuracyMeters: position.accuracy,
-        recordedAt: position.timestamp,
+  VehicleLocation _toVehicleLocation(Position position) {
+    return VehicleLocation(
+      point: GeoPoint(
+        latitude: position.latitude,
+        longitude: position.longitude,
       ),
+      heading: position.heading.isFinite ? position.heading : 0,
+      speedMps: position.speed.isFinite && position.speed > 0
+          ? position.speed
+          : 0,
+      accuracyMeters: position.accuracy,
+      recordedAt: position.timestamp,
     );
   }
 }

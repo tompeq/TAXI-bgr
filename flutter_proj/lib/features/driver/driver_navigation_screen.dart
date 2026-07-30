@@ -15,6 +15,7 @@ import '../../core/models/taxi_order.dart';
 import '../../core/orders/order_store.dart';
 import '../../core/support/support_store.dart';
 import '../../core/tracking/device_location_service.dart';
+import '../../core/tracking/navigation_motion_filter.dart';
 import '../../core/tracking/tracking_client.dart';
 import '../../core/tracking/vehicle_location.dart';
 import '../map/taxi_map.dart';
@@ -54,6 +55,8 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
   Timer? _boardTimer;
   StreamSubscription<VehicleLocation>? _locationSubscription;
   StreamSubscription<String>? _orderEventSubscription;
+  final NavigationMotionFilter _motionFilter = NavigationMotionFilter();
+  VehicleLocation? _rawVehicleLocation;
   VehicleLocation? _vehicleLocation;
   GeoPoint? _routeOrigin;
   DateTime? _lastRouteOriginUpdate;
@@ -332,18 +335,27 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
 
   void _onVehicleLocation(VehicleLocation location) {
     final now = DateTime.now();
+    final displayLocation = _motionFilter.apply(location);
+    final routeOriginDistance = _routeOrigin == null
+        ? double.infinity
+        : _distanceMeters(_routeOrigin!, displayLocation.point);
+    final routeOriginAge = _lastRouteOriginUpdate == null
+        ? const Duration(days: 1)
+        : now.difference(_lastRouteOriginUpdate!);
     final shouldUpdateRoute =
         _routeOrigin == null ||
-        _lastRouteOriginUpdate == null ||
-        now.difference(_lastRouteOriginUpdate!) >= const Duration(seconds: 15);
+        (routeOriginAge >= const Duration(seconds: 30) &&
+            routeOriginDistance >= 30) ||
+        routeOriginDistance >= 120;
     if (mounted) {
       setState(() {
-        _vehicleLocation = location;
+        _rawVehicleLocation = location;
+        _vehicleLocation = displayLocation;
         _locationError = null;
         _locationNeedsAppSettings = false;
         _locationNeedsDeviceSettings = false;
         if (shouldUpdateRoute) {
-          _routeOrigin = location.point;
+          _routeOrigin = displayLocation.point;
           _lastRouteOriginUpdate = now;
         }
       });
@@ -354,8 +366,15 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
       final headingToPickup =
           active?.status == OrderStatus.accepted ||
           active?.status == OrderStatus.driverEnRoute;
+      final publishedLocation = VehicleLocation(
+        point: location.point,
+        recordedAt: location.recordedAt,
+        heading: displayLocation.heading,
+        speedMps: location.speedMps,
+        accuracyMeters: location.accuracyMeters,
+      );
       widget.trackingClient?.publishDriverLocation(
-        location,
+        publishedLocation,
         etaSeconds: headingToPickup ? _routePreview.duration?.inSeconds : null,
       );
     }
@@ -475,20 +494,63 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
     if (_statusUpdateInFlight) {
       return;
     }
+    final completedOrderId = status == OrderStatus.completed
+        ? widget.orderStore.activeDriverOrder?.id
+        : null;
     _statusUpdateInFlight = true;
     try {
-      await widget.orderStore.updateActiveStatus(status);
+      final completionLocation = status == OrderStatus.completed
+          ? await _completionLocation()
+          : null;
+      await widget.orderStore.updateActiveStatus(
+        status,
+        completionLocation: completionLocation,
+      );
       if (status == OrderStatus.completed) {
         widget.trackingClient?.clearOrder();
         _trackedOrderId = null;
         await widget.orderStore.loadDueDriverSurveys();
         unawaited(_showDueSurvey());
-        unawaited(_showPendingEngagement());
+        unawaited(_showPendingEngagement(ratingOrderId: completedOrderId));
+      }
+    } on LocationPermissionException catch (error) {
+      if (mounted) {
+        setState(() {
+          _locationError = error.message;
+          _locationNeedsAppSettings = error.permanentlyDenied;
+          _locationNeedsDeviceSettings = error.locationServiceDisabled;
+        });
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message)));
       }
     } on Object {
       _showStoreError();
     } finally {
       _statusUpdateInFlight = false;
+    }
+  }
+
+  Future<VehicleLocation> _completionLocation() async {
+    final latest = _rawVehicleLocation;
+    if (latest != null &&
+        DateTime.now().difference(latest.recordedAt).abs() <=
+            const Duration(seconds: 12) &&
+        latest.accuracyMeters <= 150) {
+      return latest;
+    }
+
+    try {
+      final fresh = await _locationService.current();
+      _onVehicleLocation(fresh);
+      return fresh;
+    } on Object {
+      if (latest != null &&
+          DateTime.now().difference(latest.recordedAt).abs() <=
+              const Duration(seconds: 45)) {
+        return latest;
+      }
+      rethrow;
     }
   }
 
@@ -556,11 +618,15 @@ class _DriverHomeScreenState extends State<DriverHomeScreen>
     );
   }
 
-  Future<void> _showPendingEngagement() async {
+  Future<void> _showPendingEngagement({String? ratingOrderId}) async {
     if (!mounted || _engagementDialogOpen) return;
     _engagementDialogOpen = true;
     try {
-      await showPendingEngagementDialogs(context, widget.engagementStore);
+      await showPendingEngagementDialogs(
+        context,
+        widget.engagementStore,
+        ratingOrderId: ratingOrderId,
+      );
     } finally {
       _engagementDialogOpen = false;
     }

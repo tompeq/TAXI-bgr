@@ -194,13 +194,13 @@ class _PassengerHomeScreenState extends State<PassengerHomeScreen>
 
   void _onOrderStoreChanged() {
     final order = widget.orderStore.activePassengerOrder;
-    final completedOrClosed = order == null && _trackedOrderId != null;
+    final closedOrderId = order == null ? _trackedOrderId : null;
     if (order?.id != _trackedOrderId) {
       unawaited(_syncTracking(order));
     }
-    if (completedOrClosed) {
+    if (closedOrderId != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        unawaited(_showPendingEngagement());
+        unawaited(_showPendingEngagement(ratingOrderId: closedOrderId));
       });
     }
     if (mounted) {
@@ -490,11 +490,15 @@ class _PassengerHomeScreenState extends State<PassengerHomeScreen>
     );
   }
 
-  Future<void> _showPendingEngagement() async {
+  Future<void> _showPendingEngagement({String? ratingOrderId}) async {
     if (!mounted || _engagementDialogOpen) return;
     _engagementDialogOpen = true;
     try {
-      await showPendingEngagementDialogs(context, widget.engagementStore);
+      await showPendingEngagementDialogs(
+        context,
+        widget.engagementStore,
+        ratingOrderId: ratingOrderId,
+      );
     } finally {
       _engagementDialogOpen = false;
     }

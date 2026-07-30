@@ -108,32 +108,40 @@ class AppUpdateBanner extends StatelessWidget {
                     ),
                   ),
                 ],
-                if (controller.stage != AppUpdateStage.downloading) ...[
+                if (controller.stage == AppUpdateStage.ready) ...[
                   const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      if (controller.stage == AppUpdateStage.available)
-                        FilledButton.icon(
-                          onPressed: controller.download,
-                          icon: const Icon(Icons.download),
-                          label: const Text('Скачать'),
-                        ),
-                      if (controller.stage == AppUpdateStage.ready)
-                        FilledButton.icon(
-                          onPressed: controller.install,
-                          icon: const Icon(Icons.install_mobile),
-                          label: const Text('Установить'),
-                        ),
-                      if (controller.stage == AppUpdateStage.error)
-                        FilledButton.icon(
-                          onPressed: controller.hasDownloadedPackage
-                              ? controller.install
-                              : controller.download,
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('Повторить'),
-                        ),
-                    ],
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      key: const ValueKey('install-update-button'),
+                      onPressed: controller.install,
+                      icon: const Icon(Icons.install_mobile),
+                      label: const Text('Установить обновление'),
+                    ),
+                  ),
+                ],
+                if (controller.stage == AppUpdateStage.available ||
+                    controller.stage == AppUpdateStage.error) ...[
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton.icon(
+                      onPressed: controller.stage == AppUpdateStage.available
+                          ? controller.download
+                          : controller.hasDownloadedPackage
+                          ? controller.install
+                          : controller.download,
+                      icon: Icon(
+                        controller.stage == AppUpdateStage.available
+                            ? Icons.download
+                            : Icons.refresh,
+                      ),
+                      label: Text(
+                        controller.stage == AppUpdateStage.available
+                            ? 'Скачать'
+                            : 'Повторить',
+                      ),
+                    ),
                   ),
                 ],
               ],

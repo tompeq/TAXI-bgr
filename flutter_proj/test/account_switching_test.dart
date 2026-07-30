@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter_proj/core/auth/auth_api_client.dart';
 import 'package:flutter_proj/core/auth/auth_controller.dart';
 import 'package:flutter_proj/core/auth/auth_models.dart';
 import 'package:flutter_proj/core/auth/auth_session_store.dart';
 import 'package:flutter_proj/core/models/app_role.dart';
+import 'package:flutter_proj/core/network/api_exception.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -79,6 +82,81 @@ void main() {
       expect(controller.session, isNull);
     },
   );
+
+  test('shares one token refresh between concurrent requests', () async {
+    final passenger = _session(AppRole.passenger);
+    final store = _MemoryAuthSessionStore(
+      StoredAuthSessions(
+        sessions: {AppRole.passenger: passenger},
+        activeRole: AppRole.passenger,
+      ),
+    );
+    final api = _RefreshAuthApiClient();
+    final controller = AuthController(api: api, store: store);
+    addTearDown(() {
+      controller.dispose();
+      api.close();
+    });
+    await controller.initialize();
+
+    Future<String> request(String token) async {
+      if (token == passenger.accessToken) {
+        throw const ApiException(
+          message: 'Access token expired',
+          statusCode: 401,
+        );
+      }
+      return token;
+    }
+
+    final first = controller.authorizedRequest(request);
+    final second = controller.authorizedRequest(request);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(api.refreshCalls, 1);
+
+    final refreshed = _refreshedSession(AppRole.passenger);
+    api.refreshCompleter.complete(refreshed);
+
+    expect(await Future.wait([first, second]), [
+      refreshed.accessToken,
+      refreshed.accessToken,
+    ]);
+    expect(controller.session?.refreshToken, refreshed.refreshToken);
+    expect(store.value.activeSession?.refreshToken, refreshed.refreshToken);
+  });
+
+  test('keeps the session when refresh fails because of the network', () async {
+    final passenger = _session(AppRole.passenger);
+    final store = _MemoryAuthSessionStore(
+      StoredAuthSessions(
+        sessions: {AppRole.passenger: passenger},
+        activeRole: AppRole.passenger,
+      ),
+    );
+    final api = _RefreshAuthApiClient();
+    final controller = AuthController(api: api, store: store);
+    addTearDown(() {
+      controller.dispose();
+      api.close();
+    });
+    await controller.initialize();
+
+    final request = controller.authorizedRequest<String>((_) async {
+      throw const ApiException(
+        message: 'Access token expired',
+        statusCode: 401,
+      );
+    });
+    await Future<void>.delayed(Duration.zero);
+    api.refreshCompleter.completeError(
+      const ApiException(message: 'Сервер недоступен'),
+    );
+
+    await expectLater(request, throwsA(isA<ApiException>()));
+    expect(controller.session?.refreshToken, passenger.refreshToken);
+    expect(store.value.activeSession?.refreshToken, passenger.refreshToken);
+  });
 }
 
 AuthSession _session(AppRole role) {
@@ -102,6 +180,16 @@ AuthSession _localDemoSession() {
   return AuthSession(
     accessToken: 'local-dev-access-token',
     refreshToken: session.refreshToken,
+    accessTokenExpiresInSeconds: session.accessTokenExpiresInSeconds,
+    user: session.user,
+  );
+}
+
+AuthSession _refreshedSession(AppRole role) {
+  final session = _session(role);
+  return AuthSession(
+    accessToken: '${role.name}-new-access-token',
+    refreshToken: '${role.name}-new-refresh-token',
     accessTokenExpiresInSeconds: session.accessTokenExpiresInSeconds,
     user: session.user,
   );
@@ -134,5 +222,18 @@ class _NoopAuthApiClient extends AuthApiClient {
   @override
   Future<void> logout(String accessToken) async {
     loggedOutTokens.add(accessToken);
+  }
+}
+
+class _RefreshAuthApiClient extends AuthApiClient {
+  _RefreshAuthApiClient() : super(baseUrl: 'http://localhost');
+
+  final refreshCompleter = Completer<AuthSession>();
+  int refreshCalls = 0;
+
+  @override
+  Future<AuthSession> refresh(String refreshToken) {
+    refreshCalls++;
+    return refreshCompleter.future;
   }
 }
